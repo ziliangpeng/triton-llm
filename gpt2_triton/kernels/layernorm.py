@@ -1,6 +1,6 @@
 import triton
 import triton.language as tl
-import torch  # only for type hints / test oracle, will be removed from inference path later
+import numpy as np
 
 @triton.jit
 def _layernorm_kernel(
@@ -39,9 +39,12 @@ def _layernorm_kernel(
         y = (x - mean) * rstd * w + b
         tl.store(y_ptr + i + tl.arange(0, BLOCK_SIZE), y, mask=i + tl.arange(0, BLOCK_SIZE) < N)
 
-def layernorm(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5):
+def layernorm(x: np.ndarray, weight: np.ndarray, bias: np.ndarray, eps: float = 1e-5):
+    # Note: This wrapper assumes x, weight, bias are already on GPU device memory
+    # For full no-torch implementation, a CUDA memory allocator (cupy or custom) is needed
+    # For now, this is a placeholder that will be connected to a GPU backend
     N = x.shape[-1]
-    y = torch.empty_like(x)
+    y = np.empty_like(x)
     grid = (x.shape[0],)
     BLOCK_SIZE = 128 if N >= 128 else N
     _layernorm_kernel[grid](

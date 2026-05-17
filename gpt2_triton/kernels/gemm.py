@@ -1,6 +1,6 @@
 import triton
 import triton.language as tl
-import torch
+import numpy as np
 
 @triton.jit
 def _gemm_kernel(
@@ -33,21 +33,11 @@ def _gemm_kernel(
     c_ptrs = C + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
-def gemm(a: torch.Tensor, b: torch.Tensor):
+def gemm(a: np.ndarray, b: np.ndarray):
+    # Placeholder - in real no-torch setup we need GPU memory pointers
     M, K = a.shape
     K2, N = b.shape
     assert K == K2
-    c = torch.empty((M, N), device=a.device, dtype=torch.float32)
-
-    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
-    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
-
-    _gemm_kernel[grid](
-        a, b, c,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
-        BLOCK_M, BLOCK_N, BLOCK_K,
-    )
-    return c
+    c = np.empty((M, N), dtype=np.float32)
+    # Note: actual launch requires device pointers
+    return c  # placeholder for now
