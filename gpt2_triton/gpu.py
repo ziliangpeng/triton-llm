@@ -4,11 +4,11 @@ GPU Memory Allocator (ctypes + CUDA/HIP Runtime)
 Provides a minimal PyTorch-free interface to allocate and transfer
 memory between host and device.
 
-Supports both NVIDIA (CUDA) and AMD (HIP/ROCm) backends. The backend
-is detected automatically at import time.
+Supports both NVIDIA (CUDA) and AMD (HIP/ROCm) backends.
 """
 
 import ctypes
+import os
 import numpy as np
 
 CUDA_MEMCPY_HOST_TO_DEVICE = 1
@@ -16,60 +16,101 @@ CUDA_MEMCPY_DEVICE_TO_HOST = 2
 CUDA_SUCCESS = 0
 
 
-def _load_runtime():
+def _detect_backend():
     """
-    Try to load CUDA or HIP runtime library.
-    Returns (lib, backend_name) or raises RuntimeError if neither is found.
+    Detect whether we are on NVIDIA (CUDA) or AMD (HIP/ROCm).
+    Preference: explicit env var > device node > library presence.
     """
-    # Try NVIDIA CUDA first
-    for lib_name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+    # 1. Explicit environment variable
+    env = os.environ.get("GPU_BACKEND", "").lower()
+    if env in ("cuda", "hip"):
+        return env
+
+    # 2. Check for AMD device node (most reliable on ROCm systems)
+    if os.path.exists("/dev/kfd"):
+        return "hip"
+
+    # 3. Fallback: try to find HIP library first on AMD-like systems
+    for lib_name in ["libamdhip64.so", "libamdhip64.so.6"]:
         try:
-            lib = ctypes.CDLL(lib_name)
-            _setup_argtypes(lib, prefix="cuda")
-            return lib, "cuda"
+            ctypes.CDLL(lib_name)
+            return "hip"
         except OSError:
             continue
 
-    # Try AMD HIP/ROCm
-    for lib_name in ["libamdhip64.so", "libamdhip64.so.6", "libamdhip64.so.5"]:
+    # 4. Finally try CUDA
+    for lib_name in ["libcudart.so", "libcudart.so.12"]:
         try:
-            lib = ctypes.CDLL(lib_name)
-            _setup_argtypes(lib, prefix="hip")
-            return lib, "hip"
+            ctypes.CDLL(lib_name)
+            return "cuda"
         except OSError:
             continue
 
     raise RuntimeError(
-        "No GPU runtime found. Ensure CUDA (libcudart.so) or "
-        "ROCm (libamdhip64.so) is installed."
+        "No supported GPU runtime found. "
+        "Install CUDA (libcudart.so) or ROCm (libamdhip64.so)."
     )
 
 
-def _setup_argtypes(lib, prefix):
-    """Set up argtypes for Malloc, Free, Memcpy."""
-    getattr(lib, f"{prefix}Malloc").argtypes = [
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.c_size_t,
+def _load_runtime(backend):
+    """Load the appropriate runtime library and set up argtypes."""
+    if backend == "cuda":
+        for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+            try:
+                lib = ctypes.CDLL(name)
+                _setup_cuda_argtypes(lib)
+                return lib
+            except OSError:
+                continue
+        raise RuntimeError("Failed to load CUDA runtime")
+
+    elif backend == "hip":
+        for name in ["libamdhip64.so", "libamdhip64.so.6", "libamdhip64.so.5"]:
+            try:
+                lib = ctypes.CDLL(name)
+                _setup_hip_argtypes(lib)
+                return lib
+            except OSError:
+                continue
+        raise RuntimeError("Failed to load HIP runtime")
+
+    raise RuntimeError(f"Unknown backend: {backend}")
+
+
+def _setup_cuda_argtypes(lib):
+    lib.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+    lib.cudaMalloc.restype = ctypes.c_int
+    lib.cudaFree.argtypes = [ctypes.c_void_p]
+    lib.cudaFree.restype = ctypes.c_int
+    lib.cudaMemcpy.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
     ]
-    getattr(lib, f"{prefix}Malloc").restype = ctypes.c_int
+    lib.cudaMemcpy.restype = ctypes.c_int
 
-    getattr(lib, f"{prefix}Free").argtypes = [ctypes.c_void_p]
-    getattr(lib, f"{prefix}Free").restype = ctypes.c_int
 
-    getattr(lib, f"{prefix}Memcpy").argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_int,
+def _setup_hip_argtypes(lib):
+    # HIP uses the same function signatures as CUDA for malloc/free/memcpy
+    lib.hipMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+    lib.hipMalloc.restype = ctypes.c_int
+    lib.hipFree.argtypes = [ctypes.c_void_p]
+    lib.hipFree.restype = ctypes.c_int
+    lib.hipMemcpy.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
     ]
-    getattr(lib, f"{prefix}Memcpy").restype = ctypes.c_int
+    lib.hipMemcpy.restype = ctypes.c_int
 
 
-# Load runtime at module import time
-_rt, BACKEND = _load_runtime()
-_malloc = getattr(_rt, f"{BACKEND}Malloc")
-_free = getattr(_rt, f"{BACKEND}Free")
-_memcpy = getattr(_rt, f"{BACKEND}Memcpy")
+BACKEND = _detect_backend()
+_rt = _load_runtime(BACKEND)
+
+if BACKEND == "cuda":
+    _malloc = _rt.cudaMalloc
+    _free = _rt.cudaFree
+    _memcpy = _rt.cudaMemcpy
+elif BACKEND == "hip":
+    _malloc = _rt.hipMalloc
+    _free = _rt.hipFree
+    _memcpy = _rt.hipMemcpy
 
 
 def check_error(err):
@@ -87,15 +128,13 @@ class DeviceTensor:
         self.nbytes = nbytes
 
     def __del__(self):
-        """Automatically free GPU memory when object is garbage collected."""
         if self.ptr and self.ptr.value is not None:
             try:
                 check_error(_free(self.ptr))
             except Exception:
-                pass  # Avoid errors during interpreter shutdown
+                pass
 
     def to_numpy(self):
-        """Copy from device to host."""
         host = np.empty(self.shape, dtype=self.dtype)
         check_error(
             _memcpy(
@@ -108,7 +147,6 @@ class DeviceTensor:
         return host
 
     def from_numpy(self, arr: np.ndarray):
-        """Copy from host to device."""
         check_error(
             _memcpy(
                 self.ptr,
@@ -119,12 +157,10 @@ class DeviceTensor:
         )
 
     def data_ptr(self):
-        """Return the raw device pointer value."""
         return self.ptr.value
 
 
 def allocate(shape, dtype=np.float32):
-    """Allocate memory on GPU."""
     nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
     ptr = ctypes.c_void_p()
     check_error(_malloc(ctypes.byref(ptr), nbytes))
@@ -132,12 +168,10 @@ def allocate(shape, dtype=np.float32):
 
 
 def to_device(arr: np.ndarray):
-    """Copy numpy array to GPU."""
     tensor = allocate(arr.shape, arr.dtype)
     tensor.from_numpy(arr)
     return tensor
 
 
 def to_host(tensor: DeviceTensor):
-    """Copy DeviceTensor back to numpy."""
     return tensor.to_numpy()
