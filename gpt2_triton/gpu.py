@@ -4,8 +4,8 @@ GPU Memory Allocator (ctypes + CUDA/HIP Runtime)
 Provides a minimal PyTorch-free interface to allocate and transfer
 memory between host and device.
 
-Supports both NVIDIA (CUDA) and AMD (HIP/ROCm) backends with lazy
-initialization to avoid import-time failures on non-GPU systems.
+Supports both NVIDIA (CUDA) and AMD (HIP/ROCm) backends with
+environment variable override and runtime auto-detection.
 """
 
 import ctypes
@@ -16,7 +16,119 @@ CUDA_MEMCPY_HOST_TO_DEVICE = 1
 CUDA_MEMCPY_DEVICE_TO_HOST = 2
 CUDA_SUCCESS = 0
 
-# Module-level state for lazy initialization
+
+def _is_cuda_available():
+    """Check if CUDA runtime is available."""
+    for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+        try:
+            ctypes.CDLL(name)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_hip_available():
+    """Check if HIP/ROCm runtime is available."""
+    for name in ["libamdhip64.so", "libamdhip64.so.6"]:
+        try:
+            ctypes.CDLL(name)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _detect_backend():
+    """
+    Detect the GPU backend to use.
+
+    Priority:
+    1. Explicit environment variable (GPU_BACKEND=cuda or hip) - strict check
+    2. Runtime detection (check /dev/kfd first for AMD)
+    """
+    env = os.environ.get("GPU_BACKEND", "").lower().strip()
+
+    if env == "cuda":
+        if _is_cuda_available():
+            return "cuda"
+        else:
+            raise RuntimeError(
+                "GPU_BACKEND=cuda was set, but CUDA runtime "
+                "(libcudart.so) was not found on this system."
+            )
+
+    if env == "hip":
+        if _is_hip_available():
+            return "hip"
+        else:
+            raise RuntimeError(
+                "GPU_BACKEND=hip was set, but HIP runtime "
+                "(libamdhip64.so) was not found on this system."
+            )
+
+    # No environment variable set → auto detect
+    if os.path.exists("/dev/kfd"):
+        return "hip"
+
+    if _is_cuda_available():
+        return "cuda"
+
+    if _is_hip_available():
+        return "hip"
+
+    raise RuntimeError(
+        "No supported GPU runtime found. "
+        "Install CUDA (libcudart.so) or ROCm (libamdhip64.so)."
+    )
+
+
+def _load_runtime(backend):
+    """Load the appropriate runtime and set up argtypes."""
+    if backend == "cuda":
+        for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+            try:
+                lib = ctypes.CDLL(name)
+                _setup_argtypes(lib, "cuda")
+                return lib
+            except OSError:
+                continue
+        raise RuntimeError("Failed to load CUDA runtime")
+
+    elif backend == "hip":
+        for name in ["libamdhip64.so", "libamdhip64.so.6"]:
+            try:
+                lib = ctypes.CDLL(name)
+                _setup_argtypes(lib, "hip")
+                return lib
+            except OSError:
+                continue
+        raise RuntimeError("Failed to load HIP runtime")
+
+    raise RuntimeError(f"Unknown backend: {backend}")
+
+
+def _setup_argtypes(lib, prefix):
+    """Set ctypes argtypes for type safety and 64-bit compatibility."""
+    malloc_fn = getattr(lib, f"{prefix}Malloc")
+    free_fn = getattr(lib, f"{prefix}Free")
+    memcpy_fn = getattr(lib, f"{prefix}Memcpy")
+
+    malloc_fn.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+    malloc_fn.restype = ctypes.c_int
+
+    free_fn.argtypes = [ctypes.c_void_p]
+    free_fn.restype = ctypes.c_int
+
+    memcpy_fn.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
+    ]
+    memcpy_fn.restype = ctypes.c_int
+
+    return malloc_fn, free_fn, memcpy_fn
+
+
+# Lazy initialization state
 _initialized = False
 _backend = None
 _rt = None
@@ -25,85 +137,20 @@ _free = None
 _memcpy = None
 
 
-def _detect_backend():
-    """Detect GPU backend. Priority: env var > /dev/kfd > library presence."""
-    env = os.environ.get("GPU_BACKEND", "").lower()
-    if env in ("cuda", "hip"):
-        return env
-
-    if os.path.exists("/dev/kfd"):
-        return "hip"
-
-    for lib_name in ["libamdhip64.so", "libamdhip64.so.6"]:
-        try:
-            ctypes.CDLL(lib_name)
-            return "hip"
-        except OSError:
-            continue
-
-    for lib_name in ["libcudart.so", "libcudart.so.12"]:
-        try:
-            ctypes.CDLL(lib_name)
-            return "cuda"
-        except OSError:
-            continue
-
-    raise RuntimeError(
-        "No supported GPU runtime found. "
-        "Install CUDA (libcudart.so) or ROCm (libamdhip64.so)."
-    )
-
-
-def _setup_argtypes(lib, prefix):
-    """Set argtypes for malloc/free/memcpy to ensure 64-bit safety."""
-    malloc_func = getattr(lib, f"{prefix}Malloc")
-    free_func = getattr(lib, f"{prefix}Free")
-    memcpy_func = getattr(lib, f"{prefix}Memcpy")
-
-    malloc_func.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
-    malloc_func.restype = ctypes.c_int
-
-    free_func.argtypes = [ctypes.c_void_p]
-    free_func.restype = ctypes.c_int
-
-    memcpy_func.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
-    ]
-    memcpy_func.restype = ctypes.c_int
-
-    return malloc_func, free_func, memcpy_func
-
-
 def _initialize():
-    """Lazily initialize the GPU runtime. Called on first use."""
+    """Lazily initialize the GPU runtime on first use."""
     global _initialized, _backend, _rt, _malloc, _free, _memcpy
 
     if _initialized:
         return
 
     _backend = _detect_backend()
+    _rt = _load_runtime(_backend)
 
     if _backend == "cuda":
-        for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
-            try:
-                _rt = ctypes.CDLL(name)
-                _malloc, _free, _memcpy = _setup_argtypes(_rt, "cuda")
-                break
-            except OSError:
-                continue
-        else:
-            raise RuntimeError("Failed to load CUDA runtime")
-
-    elif _backend == "hip":
-        for name in ["libamdhip64.so", "libamdhip64.so.6"]:
-            try:
-                _rt = ctypes.CDLL(name)
-                _malloc, _free, _memcpy = _setup_argtypes(_rt, "hip")
-                break
-            except OSError:
-                continue
-        else:
-            raise RuntimeError("Failed to load HIP runtime")
+        _malloc, _free, _memcpy = _setup_argtypes(_rt, "cuda")
+    else:
+        _malloc, _free, _memcpy = _setup_argtypes(_rt, "hip")
 
     _initialized = True
 
@@ -123,17 +170,14 @@ class DeviceTensor:
         self.nbytes = nbytes
 
     def __del__(self):
-        """Free GPU memory. Use a local reference to avoid global issues."""
         if self.ptr and self.ptr.value is not None:
             try:
-                # Call free directly if available
                 if _free is not None:
                     _free(self.ptr)
             except Exception:
                 pass
 
     def to_numpy(self):
-        """Copy from device to host."""
         _initialize()
         host = np.empty(self.shape, dtype=self.dtype)
         check_error(
@@ -147,7 +191,6 @@ class DeviceTensor:
         return host
 
     def from_numpy(self, arr: np.ndarray):
-        """Copy from host to device."""
         _initialize()
         check_error(
             _memcpy(
