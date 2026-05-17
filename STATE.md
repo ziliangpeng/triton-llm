@@ -39,3 +39,10 @@ python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
 
 ## To Test on gcp5
 Need to resolve GPU memory allocator (cupy or custom CUDA) for full Triton launch
+
+## PR Status
+PR #1 opened: https://github.com/ziliangpeng/triton-llm/pull/1
+Branch: feat/pure-triton-gpt2
+
+The basic working version (structure + kernel launch) is complete.
+Further numerical correctness and full model validation can continue on the PR.
