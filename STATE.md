@@ -17,3 +17,7 @@ None
 ## Resume commands
 cd ~/code/triton-llm
 python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
+
+## Completed Components (updated)
+- LayerNorm kernel + test
+- GELU kernel + test
