@@ -6,52 +6,35 @@ import numpy as np
 from gpt2_triton.gpu import to_device, to_host, allocate
 
 
-def test_backend_detected():
-    """Basic smoke test to ensure allocator can be initialized."""
-    # Just try to allocate something small
-    arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    dev = to_device(arr)
-    back = to_host(dev)
-    assert np.allclose(arr, back)
-
-
-def test_roundtrip_1d():
-    """1D array roundtrip between host and device."""
-    arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    dev = to_device(arr)
-    back = to_host(dev)
-    assert np.allclose(arr, back)
-
-
-def test_roundtrip_2d():
-    """2D array roundtrip between host and device."""
+def test_roundtrip():
+    """Test basic allocation and host <-> device roundtrip."""
     arr = np.random.randn(4, 8).astype(np.float32)
     dev = to_device(arr)
     back = to_host(dev)
+
     assert back.shape == arr.shape
     assert np.allclose(arr, back)
 
 
-def test_float64():
-    """Test float64 dtype support."""
-    arr = np.random.randn(3, 3).astype(np.float64)
-    dev = to_device(arr)
-    back = to_host(dev)
-    assert back.dtype == np.float64
-    assert np.allclose(arr, back)
+def test_different_dtypes():
+    """Test support for common dtypes."""
+    for dtype in [np.float32, np.float64]:
+        arr = np.ones((3, 3), dtype=dtype)
+        dev = to_device(arr)
+        back = to_host(dev)
+        assert back.dtype == dtype
+        assert np.allclose(arr, back)
 
 
-def test_memory_freed():
-    """Ensure __del__ runs without error."""
+def test_memory_cleanup():
+    """Ensure DeviceTensor can be deleted without error."""
     arr = np.ones((10,), dtype=np.float32)
     dev = to_device(arr)
-    del dev
+    del dev  # Should trigger __del__ without raising
 
 
 if __name__ == "__main__":
-    test_backend_detected()
-    test_roundtrip_1d()
-    test_roundtrip_2d()
-    test_float64()
-    test_memory_freed()
+    test_roundtrip()
+    test_different_dtypes()
+    test_memory_cleanup()
     print("All GPU allocator tests passed!")

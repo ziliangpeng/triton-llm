@@ -16,10 +16,14 @@ CUDA_MEMCPY_HOST_TO_DEVICE = 1
 CUDA_MEMCPY_DEVICE_TO_HOST = 2
 CUDA_SUCCESS = 0
 
+# Common library names for each backend
+CUDA_LIBRARIES = ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]
+HIP_LIBRARIES = ["libamdhip64.so", "libamdhip64.so.6"]
+
 
 def _is_cuda_available():
-    """Check if CUDA runtime is available."""
-    for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+    """Check if any CUDA runtime library is present."""
+    for name in CUDA_LIBRARIES:
         try:
             ctypes.CDLL(name)
             return True
@@ -29,8 +33,8 @@ def _is_cuda_available():
 
 
 def _is_hip_available():
-    """Check if HIP/ROCm runtime is available."""
-    for name in ["libamdhip64.so", "libamdhip64.so.6"]:
+    """Check if any HIP/ROCm runtime library is present."""
+    for name in HIP_LIBRARIES:
         try:
             ctypes.CDLL(name)
             return True
@@ -44,8 +48,8 @@ def _detect_backend():
     Detect the GPU backend to use.
 
     Priority:
-    1. Explicit environment variable (GPU_BACKEND=cuda or hip) - strict check
-    2. Runtime detection (check /dev/kfd first for AMD)
+    1. Explicit environment variable (GPU_BACKEND=cuda or hip) - strict validation
+    2. Runtime auto-detection
     """
     env = os.environ.get("GPU_BACKEND", "").lower().strip()
 
@@ -54,8 +58,7 @@ def _detect_backend():
             return "cuda"
         else:
             raise RuntimeError(
-                "GPU_BACKEND=cuda was set, but CUDA runtime "
-                "(libcudart.so) was not found on this system."
+                "GPU_BACKEND=cuda was set, but no CUDA runtime library was found."
             )
 
     if env == "hip":
@@ -63,11 +66,10 @@ def _detect_backend():
             return "hip"
         else:
             raise RuntimeError(
-                "GPU_BACKEND=hip was set, but HIP runtime "
-                "(libamdhip64.so) was not found on this system."
+                "GPU_BACKEND=hip was set, but no HIP runtime library was found."
             )
 
-    # No environment variable set → auto detect
+    # Auto detection when no env var is set
     if os.path.exists("/dev/kfd"):
         return "hip"
 
@@ -84,32 +86,32 @@ def _detect_backend():
 
 
 def _load_runtime(backend):
-    """Load the appropriate runtime and set up argtypes."""
+    """Load the appropriate runtime library and set up argtypes."""
     if backend == "cuda":
-        for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
+        for name in CUDA_LIBRARIES:
             try:
                 lib = ctypes.CDLL(name)
                 _setup_argtypes(lib, "cuda")
                 return lib
             except OSError:
                 continue
-        raise RuntimeError("Failed to load CUDA runtime")
+        raise RuntimeError("Failed to load any CUDA runtime library")
 
     elif backend == "hip":
-        for name in ["libamdhip64.so", "libamdhip64.so.6"]:
+        for name in HIP_LIBRARIES:
             try:
                 lib = ctypes.CDLL(name)
                 _setup_argtypes(lib, "hip")
                 return lib
             except OSError:
                 continue
-        raise RuntimeError("Failed to load HIP runtime")
+        raise RuntimeError("Failed to load any HIP runtime library")
 
     raise RuntimeError(f"Unknown backend: {backend}")
 
 
 def _setup_argtypes(lib, prefix):
-    """Set ctypes argtypes for type safety and 64-bit compatibility."""
+    """Configure argtypes and restype for malloc/free/memcpy."""
     malloc_fn = getattr(lib, f"{prefix}Malloc")
     free_fn = getattr(lib, f"{prefix}Free")
     memcpy_fn = getattr(lib, f"{prefix}Memcpy")
