@@ -1,6 +1,7 @@
 import triton
 import triton.language as tl
 import numpy as np
+from .. import gpu
 
 @triton.jit
 def _gemm_kernel(
@@ -34,10 +35,23 @@ def _gemm_kernel(
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 def gemm(a: np.ndarray, b: np.ndarray):
-    # Placeholder - in real no-torch setup we need GPU memory pointers
+    a_dev = gpu.to_device(a)
+    b_dev = gpu.to_device(b)
+    c_dev = gpu.allocate((a.shape[0], b.shape[1]), np.float32)
+
     M, K = a.shape
-    K2, N = b.shape
-    assert K == K2
-    c = np.empty((M, N), dtype=np.float32)
-    # Note: actual launch requires device pointers
-    return c  # placeholder for now
+    N = b.shape[1]
+
+    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+
+    _gemm_kernel[grid](
+        a_dev.data_ptr(), b_dev.data_ptr(), c_dev.data_ptr(),
+        M, N, K,
+        a.stride(0) if hasattr(a, 'stride') else K, 1,
+        1, b.stride(1) if hasattr(b, 'stride') else N,
+        c_dev.shape[0] * N, N,
+        BLOCK_M, BLOCK_N, BLOCK_K,
+    )
+
+    return gpu.to_host(c_dev)
