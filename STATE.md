@@ -21,3 +21,8 @@ python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
 ## Completed Components (updated)
 - LayerNorm kernel + test
 - GELU kernel + test
+
+## Completed Components (updated 2026-05-16)
+- LayerNorm kernel + test
+- GELU kernel + test
+- Basic GEMM kernel + test (max diff < 1e-2)
