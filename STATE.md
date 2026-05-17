@@ -31,3 +31,11 @@ python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
 - Removed all torch dependency from main code to satisfy "no pytorch" requirement
 - Using numpy for host-side arrays and reference
 - Kernel launch placeholders noted (full GPU memory management to be added)
+
+## Current Status
+- All kernels refactored to numpy + triton (no torch)
+- Basic GPT-2 model skeleton implemented (CPU numpy reference)
+- Next: Improve Triton kernel integration and GPU memory management
+
+## To Test on gcp5
+Need to resolve GPU memory allocator (cupy or custom CUDA) for full Triton launch
