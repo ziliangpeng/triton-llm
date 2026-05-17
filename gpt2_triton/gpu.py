@@ -19,18 +19,17 @@ CUDA_SUCCESS = 0
 def _detect_backend():
     """
     Detect whether we are on NVIDIA (CUDA) or AMD (HIP/ROCm).
-    Preference: explicit env var > device node > library presence.
+    Priority: explicit env var > /dev/kfd (AMD) > library presence.
     """
-    # 1. Explicit environment variable
     env = os.environ.get("GPU_BACKEND", "").lower()
     if env in ("cuda", "hip"):
         return env
 
-    # 2. Check for AMD device node (most reliable on ROCm systems)
+    # AMD ROCm systems expose /dev/kfd
     if os.path.exists("/dev/kfd"):
         return "hip"
 
-    # 3. Fallback: try to find HIP library first on AMD-like systems
+    # Try HIP libraries first on AMD-like environments
     for lib_name in ["libamdhip64.so", "libamdhip64.so.6"]:
         try:
             ctypes.CDLL(lib_name)
@@ -38,7 +37,7 @@ def _detect_backend():
         except OSError:
             continue
 
-    # 4. Finally try CUDA
+    # Fallback to CUDA
     for lib_name in ["libcudart.so", "libcudart.so.12"]:
         try:
             ctypes.CDLL(lib_name)
@@ -53,7 +52,6 @@ def _detect_backend():
 
 
 def _load_runtime(backend):
-    """Load the appropriate runtime library and set up argtypes."""
     if backend == "cuda":
         for name in ["libcudart.so", "libcudart.so.12", "libcudart.so.11"]:
             try:
@@ -65,7 +63,7 @@ def _load_runtime(backend):
         raise RuntimeError("Failed to load CUDA runtime")
 
     elif backend == "hip":
-        for name in ["libamdhip64.so", "libamdhip64.so.6", "libamdhip64.so.5"]:
+        for name in ["libamdhip64.so", "libamdhip64.so.6"]:
             try:
                 lib = ctypes.CDLL(name)
                 _setup_hip_argtypes(lib)
@@ -89,7 +87,6 @@ def _setup_cuda_argtypes(lib):
 
 
 def _setup_hip_argtypes(lib):
-    # HIP uses the same function signatures as CUDA for malloc/free/memcpy
     lib.hipMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
     lib.hipMalloc.restype = ctypes.c_int
     lib.hipFree.argtypes = [ctypes.c_void_p]
