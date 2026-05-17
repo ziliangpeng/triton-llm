@@ -1,27 +1,54 @@
 """
-Basic tests for the GPU allocator.
+Tests for the GPU Memory Allocator (CUDA and HIP backends).
 """
 
 import numpy as np
-from gpt2_triton.gpu import to_device, to_host
+from gpt2_triton.gpu import to_device, to_host, BACKEND, allocate
 
 
-def test_roundtrip():
+def test_backend_detected():
+    """Ensure a valid GPU backend was detected."""
+    assert BACKEND in ("cuda", "hip"), f"Unknown backend: {BACKEND}"
+    print(f"Detected backend: {BACKEND}")
+
+
+def test_roundtrip_1d():
+    """1D array roundtrip between host and device."""
     arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     dev = to_device(arr)
     back = to_host(dev)
-    assert np.allclose(arr, back)
+    assert np.allclose(arr, back), "1D roundtrip mismatch"
 
 
-def test_2d_array():
+def test_roundtrip_2d():
+    """2D array roundtrip between host and device."""
     arr = np.random.randn(4, 8).astype(np.float32)
     dev = to_device(arr)
     back = to_host(dev)
     assert back.shape == arr.shape
-    assert np.allclose(arr, back)
+    assert np.allclose(arr, back), "2D roundtrip mismatch"
+
+
+def test_float64():
+    """Test float64 dtype support."""
+    arr = np.random.randn(3, 3).astype(np.float64)
+    dev = to_device(arr)
+    back = to_host(dev)
+    assert back.dtype == np.float64
+    assert np.allclose(arr, back), "float64 roundtrip mismatch"
+
+
+def test_memory_freed():
+    """Ensure __del__ runs without error."""
+    arr = np.ones((10,), dtype=np.float32)
+    dev = to_device(arr)
+    del dev  # Should call cudaFree / hipFree without error
 
 
 if __name__ == "__main__":
-    test_roundtrip()
-    test_2d_array()
-    print("All allocator tests passed!")
+    test_backend_detected()
+    test_roundtrip_1d()
+    test_roundtrip_2d()
+    test_float64()
+    test_memory_freed()
+    print("All GPU allocator tests passed!")
