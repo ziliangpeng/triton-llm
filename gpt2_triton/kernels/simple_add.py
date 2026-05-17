@@ -12,9 +12,15 @@ def _add_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < N
-    x = tl.load(X + offs, mask=mask)
-    y = tl.load(Y + offs, mask=mask)
-    tl.store(Z + offs, x + y, mask=mask)
+
+    # Cast raw int ptr to proper pointer type
+    x_ptr = tl.cast(X, tl.pointer_type(tl.float32))
+    y_ptr = tl.cast(Y, tl.pointer_type(tl.float32))
+    z_ptr = tl.cast(Z, tl.pointer_type(tl.float32))
+
+    x = tl.load(x_ptr + offs, mask=mask)
+    y = tl.load(y_ptr + offs, mask=mask)
+    tl.store(z_ptr + offs, x + y, mask=mask)
 
 def add(x: np.ndarray, y: np.ndarray):
     assert x.shape == y.shape

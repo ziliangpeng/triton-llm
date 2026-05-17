@@ -21,8 +21,12 @@ def _gemm_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, BLOCK_K)
 
-    a_ptrs = A + (offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak)
-    b_ptrs = B + (offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn)
+    a_ptr = A.to(tl.pointer_type(tl.float32))
+    b_ptr = B.to(tl.pointer_type(tl.float32))
+    c_ptr = C.to(tl.pointer_type(tl.float32))
+
+    a_ptrs = a_ptr + (offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn)
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
@@ -33,7 +37,7 @@ def _gemm_kernel(
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
 
-    c_ptrs = C + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
+    c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 def gemm(a: np.ndarray, b: np.ndarray):

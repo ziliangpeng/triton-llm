@@ -14,8 +14,11 @@ def _layernorm_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     row = tl.program_id(0)
-    x_ptr = X + row * N
-    y_ptr = Y + row * N
+    x_ptr = X.to(tl.pointer_type(tl.float32)) + row * N
+    w_ptr = W.to(tl.pointer_type(tl.float32))
+    b_ptr = B.to(tl.pointer_type(tl.float32))
+    y_ptr = Y.to(tl.pointer_type(tl.float32))
+
 
     mean = 0.0
     for i in range(0, N, BLOCK_SIZE):
@@ -32,8 +35,8 @@ def _layernorm_kernel(
 
     for i in range(0, N, BLOCK_SIZE):
         x = tl.load(x_ptr + i + tl.arange(0, BLOCK_SIZE), mask=i + tl.arange(0, BLOCK_SIZE) < N, other=0.0)
-        w = tl.load(W + i + tl.arange(0, BLOCK_SIZE), mask=i + tl.arange(0, BLOCK_SIZE) < N, other=0.0)
-        b = tl.load(B + i + tl.arange(0, BLOCK_SIZE), mask=i + tl.arange(0, BLOCK_SIZE) < N, other=0.0)
+        w = tl.load(w_ptr + i + tl.arange(0, BLOCK_SIZE), mask=i + tl.arange(0, BLOCK_SIZE) < N, other=0.0)
+        b = tl.load(b_ptr + i + tl.arange(0, BLOCK_SIZE), mask=i + tl.arange(0, BLOCK_SIZE) < N, other=0.0)
         y = (x - mean) * rstd * w + b
         tl.store(y_ptr + i + tl.arange(0, BLOCK_SIZE), y, mask=i + tl.arange(0, BLOCK_SIZE) < N)
 
