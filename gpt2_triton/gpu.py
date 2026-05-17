@@ -8,8 +8,27 @@ memory between host and device.
 import ctypes
 import numpy as np
 
+# Load CUDA runtime
 cudart = ctypes.CDLL("libcudart.so")
+
+# Define argtypes for safety and 64-bit compatibility
+cudart.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
+cudart.cudaMalloc.restype = ctypes.c_int
+
+cudart.cudaFree.argtypes = [ctypes.c_void_p]
+cudart.cudaFree.restype = ctypes.c_int
+
+cudart.cudaMemcpy.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_int,
+]
+cudart.cudaMemcpy.restype = ctypes.c_int
+
 CUDA_SUCCESS = 0
+CUDA_MEMCPY_HOST_TO_DEVICE = 1
+CUDA_MEMCPY_DEVICE_TO_HOST = 2
 
 
 def check_cuda(err):
@@ -18,13 +37,21 @@ def check_cuda(err):
 
 
 class DeviceTensor:
-    """Wrapper for a CUDA device pointer."""
+    """Wrapper for a CUDA device pointer with automatic cleanup."""
 
     def __init__(self, ptr, shape, dtype, nbytes):
         self.ptr = ptr
         self.shape = shape
         self.dtype = dtype
         self.nbytes = nbytes
+
+    def __del__(self):
+        """Automatically free GPU memory when object is garbage collected."""
+        if self.ptr and self.ptr.value is not None:
+            try:
+                check_cuda(cudart.cudaFree(self.ptr))
+            except Exception:
+                pass  # Avoid errors during interpreter shutdown
 
     def to_numpy(self):
         """Copy from device to host."""
@@ -34,7 +61,7 @@ class DeviceTensor:
                 host.ctypes.data_as(ctypes.c_void_p),
                 self.ptr,
                 self.nbytes,
-                ctypes.c_int(2),  # DeviceToHost
+                CUDA_MEMCPY_DEVICE_TO_HOST,
             )
         )
         return host
@@ -46,7 +73,7 @@ class DeviceTensor:
                 self.ptr,
                 arr.ctypes.data_as(ctypes.c_void_p),
                 self.nbytes,
-                ctypes.c_int(1),  # HostToDevice
+                CUDA_MEMCPY_HOST_TO_DEVICE,
             )
         )
 
