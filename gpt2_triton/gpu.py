@@ -1,18 +1,23 @@
 """
-GPU memory management using Triton's driver (Triton 3.1.0 compatible).
+Minimal GPU memory management using only ctypes + CUDA runtime.
+This version is known to work for allocate + memcpy.
 """
 
 import numpy as np
-from triton.runtime.driver import driver
+import ctypes
 
-def get_device():
-    return driver.active
+cudart = ctypes.CDLL('libcudart.so')
+
+cudaSuccess = 0
+
+def check_cuda(err):
+    if err != cudaSuccess:
+        raise RuntimeError(f"CUDA error {err}")
 
 def allocate(shape, dtype=np.float32):
     nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
-    dev = get_device()
-    allocator = dev.allocator
-    ptr = allocator.allocate(nbytes)
+    ptr = ctypes.c_void_p()
+    check_cuda(cudart.cudaMalloc(ctypes.byref(ptr), nbytes))
     return DeviceTensor(ptr, shape, dtype, nbytes)
 
 class DeviceTensor:
@@ -23,34 +28,30 @@ class DeviceTensor:
         self.nbytes = nbytes
 
     def to_numpy(self):
-        import ctypes
         host = np.empty(self.shape, dtype=self.dtype)
-        cudart = ctypes.CDLL('libcudart.so')
-        cudart.cudaMemcpy(
+        check_cuda(cudart.cudaMemcpy(
             host.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_void_p(self.ptr),
+            self.ptr,
             self.nbytes,
-            ctypes.c_int(2)
-        )
+            ctypes.c_int(2)  # DeviceToHost
+        ))
         return host
 
     def from_numpy(self, arr: np.ndarray):
-        import ctypes
-        cudart = ctypes.CDLL('libcudart.so')
-        cudart.cudaMemcpy(
-            ctypes.c_void_p(self.ptr),
+        check_cuda(cudart.cudaMemcpy(
+            self.ptr,
             arr.ctypes.data_as(ctypes.c_void_p),
             self.nbytes,
-            ctypes.c_int(1)
-        )
+            ctypes.c_int(1)  # HostToDevice
+        ))
 
     def data_ptr(self):
-        return self.ptr
+        return self.ptr.value
 
 def to_device(arr: np.ndarray):
-    tensor = allocate(arr.shape, arr.dtype)
-    tensor.from_numpy(arr)
-    return tensor
+    t = allocate(arr.shape, arr.dtype)
+    t.from_numpy(arr)
+    return t
 
-def to_host(tensor: DeviceTensor):
-    return tensor.to_numpy()
+def to_host(t: DeviceTensor):
+    return t.to_numpy()
