@@ -10,7 +10,9 @@ def _gemm_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -42,15 +44,15 @@ def gemm(a: np.ndarray, b: np.ndarray):
     M, K = a.shape
     N = b.shape[1]
 
-    BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
+    BLOCK_M, BLOCK_N, BLOCK_K = 32, 32, 32
     grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
 
     _gemm_kernel[grid](
         a_dev.data_ptr(), b_dev.data_ptr(), c_dev.data_ptr(),
         M, N, K,
-        a.stride(0) if hasattr(a, 'stride') else K, 1,
-        1, b.stride(1) if hasattr(b, 'stride') else N,
-        c_dev.shape[0] * N, N,
+        K, 1,
+        N, 1,
+        N, 1,
         BLOCK_M, BLOCK_N, BLOCK_K,
     )
 
