@@ -1,55 +1,58 @@
 """
-GPU memory management using only ctypes + CUDA runtime (no PyTorch, minimal Triton dependency).
+GPU memory management using Triton's own driver (recommended way).
+This returns proper pointer objects that Triton kernels can use directly.
 """
 
 import numpy as np
-import ctypes
+import triton
+from triton.runtime.driver import driver
 
-# Load CUDA runtime
-try:
-    cudart = ctypes.CDLL('libcudart.so')
-except OSError:
-    cudart = ctypes.CDLL('libcudart.so.12')
-
-cudaSuccess = 0
-
-def check_cuda(error):
-    if error != cudaSuccess:
-        raise RuntimeError(f"CUDA error: {error}")
+def get_device():
+    return driver.get_current_device()
 
 def allocate(shape, dtype=np.float32):
     nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
-    ptr = ctypes.c_void_p()
-    check_cuda(cudart.cudaMalloc(ctypes.byref(ptr), nbytes))
+    device = get_device()
+    allocator = driver.get_allocator(device)
+    ptr = allocator.allocate(nbytes)
     return DeviceTensor(ptr, shape, dtype, nbytes)
 
 class DeviceTensor:
     def __init__(self, ptr, shape, dtype, nbytes):
-        self.ptr = ptr
+        self.ptr = ptr          # This should be a proper Triton pointer object
         self.shape = shape
         self.dtype = dtype
         self.nbytes = nbytes
 
     def to_numpy(self):
         host = np.empty(self.shape, dtype=self.dtype)
-        check_cuda(cudart.cudaMemcpy(
+        # Use Triton's copy or cudaMemcpy
+        # For simplicity, we'll implement via ctypes for now
+        import ctypes
+        cudart = ctypes.CDLL('libcudart.so')
+        cudart.cudaMemcpy(
             host.ctypes.data_as(ctypes.c_void_p),
-            self.ptr,
+            ctypes.c_void_p(self.ptr.value if hasattr(self.ptr, 'value') else self.ptr),
             self.nbytes,
-            ctypes.c_int(2)  # cudaMemcpyDeviceToHost
-        ))
+            ctypes.c_int(2)
+        )
         return host
 
     def from_numpy(self, arr: np.ndarray):
-        check_cuda(cudart.cudaMemcpy(
-            self.ptr,
+        import ctypes
+        cudart = ctypes.CDLL('libcudart.so')
+        cudart.cudaMemcpy(
+            ctypes.c_void_p(self.ptr.value if hasattr(self.ptr, 'value') else self.ptr),
             arr.ctypes.data_as(ctypes.c_void_p),
             self.nbytes,
-            ctypes.c_int(1)  # cudaMemcpyHostToDevice
-        ))
+            ctypes.c_int(1)
+        )
 
     def data_ptr(self):
-        return self.ptr.value
+        # Return the pointer in the format Triton expects
+        if hasattr(self.ptr, 'value'):
+            return self.ptr.value
+        return self.ptr
 
 def to_device(arr: np.ndarray):
     tensor = allocate(arr.shape, arr.dtype)
