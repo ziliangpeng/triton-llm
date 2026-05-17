@@ -46,3 +46,6 @@ Branch: feat/pure-triton-gpt2
 
 The basic working version (structure + kernel launch) is complete.
 Further numerical correctness and full model validation can continue on the PR.
+
+## PR Description Updated
+Detailed process, decisions, testing steps, and results added to PR #1 body.
