@@ -26,3 +26,8 @@ python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
 - LayerNorm kernel + test
 - GELU kernel + test
 - Basic GEMM kernel + test (max diff < 1e-2)
+
+## Key Decision (2026-05-16)
+- Removed all torch dependency from main code to satisfy "no pytorch" requirement
+- Using numpy for host-side arrays and reference
+- Kernel launch placeholders noted (full GPU memory management to be added)
