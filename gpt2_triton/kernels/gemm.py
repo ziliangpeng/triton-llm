@@ -53,11 +53,18 @@ def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """
     Perform matrix multiplication C = A @ B using Triton.
     A: (M, K), B: (K, N) -> C: (M, N)
+
+    Note: Input arrays are converted to C-contiguous to ensure
+    correct memory layout when transferred to the device.
     """
     assert a.ndim == 2 and b.ndim == 2
     M, K = a.shape
     K2, N = b.shape
     assert K == K2, "Inner dimensions must match"
+
+    # Ensure C-contiguous to avoid data corruption on device
+    a = np.ascontiguousarray(a)
+    b = np.ascontiguousarray(b)
 
     a_dev = gpu.to_device(a)
     b_dev = gpu.to_device(b)

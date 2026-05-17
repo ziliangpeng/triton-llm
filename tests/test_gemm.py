@@ -8,7 +8,7 @@ from gpt2_triton.kernels.gemm import gemm
 
 
 def test_gemm_correctness():
-    """Test numerical correctness against numpy matmul."""
+    """Test numerical correctness against numpy matmul using np.allclose."""
     print("\n=== GEMM Correctness Tests ===")
 
     test_cases = [
@@ -26,11 +26,13 @@ def test_gemm_correctness():
         ref = a @ b
         out = gemm(a, b)
 
+        # Use np.allclose with reasonable tolerance
+        passed = np.allclose(out, ref, rtol=1e-3, atol=1e-2)
         max_diff = np.abs(out - ref).max()
-        passed = max_diff < 0.1
-        status = "PASS" if passed else "FAIL"
 
-        print(f"[{status}] {M}x{K} @ {K}x{N} | max_diff={max_diff:.2e}")
+        status = "PASS" if passed else "FAIL"
+        print(f"[{status}] {M}x{K} @ {K}x{N} | max_diff={max_diff:.2e} | allclose={passed}")
+
         all_passed &= passed
 
     return all_passed
