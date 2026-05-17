@@ -1,23 +1,19 @@
 # State — triton-llm GPT-2 pure Triton inference
 
 **Snapshot**: 2026-05-16  
-**Current Phase**: Phase 0 complete (repo created)  
-**Next Phase**: Phase 1 — implement core Python + Triton GPT-2
+**Current Phase**: Phase 1 — Component implementation (LayerNorm done)  
+**Next**: Implement GELU / GEMM kernels + tests
+
+## Completed Components
+- LayerNorm kernel + correctness test (max diff < 1e-3 vs torch reference)
 
 ## Open PRs
-None yet
+None
 
 ## Live resources
-- Local repo: ~/code/triton-llm
+- Local: ~/code/triton-llm
 - GitHub: https://github.com/ziliangpeng/triton-llm
-- Remote test node: gcp5 (to be reserved in Phase 2)
-
-## Verified facts
-- gh CLI authenticated as ziliangpeng
-- git repo initialized and pushed
-
-## Pending verifications
-- Triton environment on gcp5 GPU node
 
 ## Resume commands
 cd ~/code/triton-llm
+python -m pytest gpt2_triton/tests/test_layernorm.py   # (will need CUDA)
