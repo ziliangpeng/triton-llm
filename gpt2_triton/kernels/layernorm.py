@@ -142,5 +142,11 @@ def layer_norm(
         BLOCK_SIZE,
     )
 
+    # Explicit device synchronize is required here. Triton manages its own
+    # internal stream, which may differ from the CUDA/HIP default stream.
+    # cudaMemcpy (used inside to_host) only synchronizes the default stream,
+    # so without cudaDeviceSynchronize we could read stale data if the kernel
+    # is still running on a non-default stream. cudaDeviceSynchronize waits
+    # for all streams, guaranteeing the kernel is complete before the copy.
     gpu.synchronize()
     return gpu.to_host(y_dev).reshape(orig_shape)
