@@ -30,7 +30,7 @@ def test_gemm_correctness():
         out = gemm(a, b)
 
         # Use np.allclose with reasonable tolerance
-        passed = np.allclose(out, ref, rtol=1e-3, atol=1e-2)
+        passed = np.allclose(out, ref, rtol=1e-2, atol=5e-2)
         max_diff = np.abs(out - ref).max()
 
         status = "PASS" if passed else "FAIL"

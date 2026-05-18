@@ -29,7 +29,11 @@ def _gemm_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, BLOCK_K)
 
-    # No manual pointer cast - use the pointer directly
+    # Cast raw pointers to proper pointer type (fixes int64 vs pointer mismatch on Triton 3.x)
+    A = tl.cast(A, tl.pointer_type(tl.float32))
+    B = tl.cast(B, tl.pointer_type(tl.float32))
+    C = tl.cast(C, tl.pointer_type(tl.float32))
+
     a_ptrs = A + (offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = B + (offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn)
 
@@ -90,4 +94,5 @@ def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         BLOCK_M, BLOCK_N, BLOCK_K,
     )
 
+    gpu.synchronize()
     return gpu.to_host(c_dev)
