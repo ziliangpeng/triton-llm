@@ -51,7 +51,9 @@ def _layer_norm_kernel(
     # then variance via E[(x - mean)^2]. This avoids the catastrophic
     # cancellation that E[x^2] - E[x]^2 suffers from when the row has
     # a large mean (e.g. residual-stream activations in GPT-2).
-    sum_x = tl.sum(tl.where(mask, x, 0.0), axis=0)
+    # x was loaded with other=0.0, so out-of-bounds lanes are already 0;
+    # no need for an additional tl.where here.
+    sum_x = tl.sum(x, axis=0)
     mean = sum_x / N
 
     x_centered = tl.where(mask, x - mean, 0.0)
@@ -85,25 +87,36 @@ def layer_norm(
 
     Parameters
     ----------
-    x : (M, N) float32 array.
+    x : (..., N) float32 array. Leading dimensions are flattened internally,
+        so 2D (M, N), 3D (B, S, N), and higher are all supported.
     gamma : (N,) float32 scale parameter.
     beta : (N,) float32 bias parameter.
     eps : float, small constant for numerical stability.
 
     Returns
     -------
-    y : (M, N) float32 array.
+    y : same shape as ``x``.
     """
-    assert x.ndim == 2, "LayerNorm expects a 2D (M, N) input"
-    assert gamma.ndim == 1 and beta.ndim == 1, "gamma/beta must be 1D"
-    M, N = x.shape
-    assert gamma.shape == (N,), f"gamma must have shape ({N},), got {gamma.shape}"
-    assert beta.shape == (N,), f"beta must have shape ({N},), got {beta.shape}"
+    if x.ndim < 2:
+        raise ValueError(f"LayerNorm expects at least a 2D input, got {x.ndim}D")
+    if gamma.ndim != 1 or beta.ndim != 1:
+        raise ValueError("gamma and beta must be 1D arrays")
 
-    # Ensure C-contiguous float32 so device strides match what the kernel expects.
-    x = np.ascontiguousarray(x, dtype=np.float32)
+    orig_shape = x.shape
+    N = orig_shape[-1]
+
+    if gamma.shape != (N,):
+        raise ValueError(f"gamma shape mismatch: expected ({N},), got {gamma.shape}")
+    if beta.shape != (N,):
+        raise ValueError(f"beta shape mismatch: expected ({N},), got {beta.shape}")
+    if N == 0:
+        raise ValueError("LayerNorm requires the last dimension N > 0")
+
+    # Flatten all leading dimensions so the kernel sees (M, N).
+    x = np.ascontiguousarray(x.reshape(-1, N), dtype=np.float32)
     gamma = np.ascontiguousarray(gamma, dtype=np.float32)
     beta = np.ascontiguousarray(beta, dtype=np.float32)
+    M = x.shape[0]
 
     # Strides in elements (not bytes).
     stride_x_row = x.strides[0] // x.itemsize  # == N for contiguous input
@@ -130,4 +143,4 @@ def layer_norm(
     )
 
     gpu.synchronize()
-    return gpu.to_host(y_dev)
+    return gpu.to_host(y_dev).reshape(orig_shape)

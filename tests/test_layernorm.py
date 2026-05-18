@@ -29,8 +29,8 @@ def test_layer_norm_correctness():
         (4, 33),
     ]
 
+    np.random.seed(0)
     for M, N in test_cases:
-        np.random.seed(0)
         x = np.random.randn(M, N).astype(np.float32)
         gamma = np.random.randn(N).astype(np.float32)
         beta = np.random.randn(N).astype(np.float32)
@@ -108,11 +108,11 @@ def test_layer_norm_performance():
     min_ms = float(np.min(times) * 1000)
     print(f"Size: ({M}, {N}) | avg={avg_ms:.2f} ms | min={min_ms:.2f} ms")
     # Loose upper bound for CI — includes host<->device copies and allocation.
-    assert avg_ms < 100, f"LayerNorm unexpectedly slow: {avg_ms:.2f} ms"
+    assert avg_ms < 10, f"LayerNorm unexpectedly slow: {avg_ms:.2f} ms"
 
 
 def test_layer_norm_input_validation():
-    """Shape mismatches should be rejected."""
+    """Shape mismatches and invalid inputs should raise ValueError."""
     print("\n=== LayerNorm Input Validation ===")
     x = np.random.randn(8, 64).astype(np.float32)
 
@@ -120,14 +120,14 @@ def test_layer_norm_input_validation():
     try:
         layer_norm(x, np.ones(32, dtype=np.float32), np.zeros(64, dtype=np.float32))
         assert False, "Should have rejected mismatched gamma shape"
-    except AssertionError:
+    except ValueError:
         print("[PASS] Mismatched gamma shape correctly rejected")
 
     # Wrong beta shape.
     try:
         layer_norm(x, np.ones(64, dtype=np.float32), np.zeros(32, dtype=np.float32))
         assert False, "Should have rejected mismatched beta shape"
-    except AssertionError:
+    except ValueError:
         print("[PASS] Mismatched beta shape correctly rejected")
 
     # 1D input.
@@ -136,8 +136,36 @@ def test_layer_norm_input_validation():
                    np.ones(64, dtype=np.float32),
                    np.zeros(64, dtype=np.float32))
         assert False, "Should have rejected non-2D input"
-    except AssertionError:
-        print("[PASS] Non-2D input correctly rejected")
+    except ValueError:
+        print("[PASS] Non-2D (1D) input correctly rejected")
+
+    # N=0 last dimension.
+    try:
+        layer_norm(np.random.randn(4, 0).astype(np.float32),
+                   np.ones(0, dtype=np.float32),
+                   np.zeros(0, dtype=np.float32))
+        assert False, "Should have rejected N=0"
+    except ValueError:
+        print("[PASS] N=0 correctly rejected")
+
+
+def test_layer_norm_3d():
+    """3D input (B, S, N) is supported via leading-dim flattening."""
+    print("\n=== LayerNorm 3D Input Test ===")
+    B, S, N = 4, 16, 128
+    np.random.seed(7)
+    x = np.random.randn(B, S, N).astype(np.float32)
+    gamma = np.random.randn(N).astype(np.float32)
+    beta = np.random.randn(N).astype(np.float32)
+
+    out = layer_norm(x, gamma, beta)
+    ref = _layer_norm_reference(x, gamma, beta)
+
+    assert out.shape == (B, S, N), f"Output shape mismatch: {out.shape}"
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, rtol=1e-3, atol=1e-4)
+    print(f"[{'PASS' if passed else 'FAIL'}] shape=({B},{S},{N}) | max_diff={max_diff:.2e}")
+    assert passed, f"3D LayerNorm failed, max_diff={max_diff:.2e}"
 
 
 if __name__ == "__main__":
@@ -147,6 +175,7 @@ if __name__ == "__main__":
     test_layer_norm_large_magnitude()
     test_layer_norm_performance()
     test_layer_norm_input_validation()
+    test_layer_norm_3d()
     print("\n" + "=" * 45)
     print("All LayerNorm tests PASSED")
     print("=" * 45)
