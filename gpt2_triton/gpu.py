@@ -227,3 +227,17 @@ def to_device(arr: np.ndarray):
 def to_host(tensor: DeviceTensor):
     """Copy DeviceTensor back to numpy."""
     return tensor.to_numpy()
+
+
+def synchronize():
+    """Synchronize the current device (CUDA or HIP).
+
+    Ensures all previous GPU operations are complete before proceeding.
+    Critical after kernel launches before host-side reads.
+    """
+    _initialize()
+    sync_fn = getattr(_rt, f"{_backend}DeviceSynchronize")
+    sync_fn.argtypes = []
+    sync_fn.restype = ctypes.c_int
+    err = sync_fn()
+    check_error(err)

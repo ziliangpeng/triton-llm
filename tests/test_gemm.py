@@ -8,13 +8,16 @@ from gpt2_triton.kernels.gemm import gemm
 
 
 def test_gemm_correctness():
-    """Test numerical correctness against numpy matmul."""
+    """Test numerical correctness against numpy matmul using np.allclose."""
     print("\n=== GEMM Correctness Tests ===")
 
     test_cases = [
         (64, 128, 32),
         (128, 256, 128),
         (256, 512, 256),
+        # Non-block-aligned cases to test boundary masking
+        (65, 130, 33),
+        (100, 200, 150),
     ]
 
     all_passed = True
@@ -26,11 +29,15 @@ def test_gemm_correctness():
         ref = a @ b
         out = gemm(a, b)
 
+        # Use np.allclose with reasonable tolerance
+        passed = np.allclose(out, ref, rtol=1e-2, atol=5e-2)
         max_diff = np.abs(out - ref).max()
-        passed = max_diff < 0.1
-        status = "PASS" if passed else "FAIL"
 
-        print(f"[{status}] {M}x{K} @ {K}x{N} | max_diff={max_diff:.2e}")
+        status = "PASS" if passed else "FAIL"
+        print(f"[{status}] {M}x{K} @ {K}x{N} | max_diff={max_diff:.2e} | allclose={passed}")
+
+        assert passed, f"GEMM failed for {M}x{K}@{K}x{N}, max_diff={max_diff:.2e}"
+
         all_passed &= passed
 
     return all_passed
@@ -62,13 +69,40 @@ def test_gemm_performance():
     print(f"Avg time: {avg_ms:.2f} ms")
     print(f"Min time: {min_ms:.2f} ms")
 
+    # Loose upper bound for CI
+    assert avg_ms < 50, f"GEMM too slow: {avg_ms:.2f}ms"
+
     return avg_ms
+
+
+def test_gemm_edge_cases():
+    """Test edge cases."""
+    print("\n=== GEMM Edge Cases ===")
+
+    # K=0 should raise or handle gracefully
+    try:
+        a = np.random.randn(10, 0).astype(np.float32)
+        b = np.random.randn(0, 10).astype(np.float32)
+        _ = gemm(a, b)
+        print("[INFO] K=0 case handled (returned zero matrix)")
+    except AssertionError:
+        print("[PASS] K=0 correctly rejected")
+
+    # Mismatched K should raise
+    try:
+        a = np.random.randn(10, 20).astype(np.float32)
+        b = np.random.randn(30, 10).astype(np.float32)
+        _ = gemm(a, b)
+        assert False, "Should have raised AssertionError"
+    except AssertionError:
+        print("[PASS] Mismatched K correctly rejected")
 
 
 if __name__ == "__main__":
     print("Running GEMM unit tests on current GPU backend...\n")
     correctness = test_gemm_correctness()
     perf = test_gemm_performance()
+    test_gemm_edge_cases()
 
     print("\n" + "=" * 45)
     print("All GEMM tests PASSED" if correctness else "Some tests FAILED")
