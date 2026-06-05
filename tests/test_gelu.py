@@ -139,6 +139,7 @@ def test_gelu_non_contiguous():
     ref_row = _gelu_ref_torch(row)
     passed_row = np.allclose(out_row, ref_row, atol=1e-4)
     print(f"[{'PASS' if passed_row else 'FAIL'}] Row slice       | max_diff={float(np.abs(out_row - ref_row).max()):.2e}")
+    assert passed_row, f"Row slice GELU failed, max_diff={float(np.abs(out_row - ref_row).max()):.2e}"
 
 
 def test_gelu_dtype_conversion():
