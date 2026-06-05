@@ -87,11 +87,20 @@ def test_gelu_edge_cases():
 
 
 def test_gelu_empty_array():
-    """Empty input (N=0) should return an empty array."""
+    """Empty input (N=0) should return an empty float32 array."""
     print("\n=== GELU Empty Array Test ===")
+    # 1D empty array
     x = np.array([], dtype=np.float32)
     out = gelu(x)
     assert out.shape == (0,), f"Expected shape (0,), got {out.shape}"
+    assert out.dtype == np.float32, f"Expected float32, got {out.dtype}"
+
+    # Multi-dimensional empty array
+    x_multi = np.empty((0, 10, 5), dtype=np.float32)
+    out_multi = gelu(x_multi)
+    assert out_multi.shape == (0, 10, 5), f"Expected shape (0, 10, 5), got {out_multi.shape}"
+    assert out_multi.dtype == np.float32, f"Expected float32, got {out_multi.dtype}"
+
     print("[PASS] Empty array handled correctly")
 
 

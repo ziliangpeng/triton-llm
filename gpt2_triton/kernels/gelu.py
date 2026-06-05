@@ -16,10 +16,16 @@ from .. import gpu
 
 @triton.jit
 def _tanh(x):
-    """Numerically stable tanh via exp (Triton 3.x compatibility: no tl.tanh)."""
-    x = tl.clamp(x, -20.0, 20.0)
-    exp_2x = tl.exp(2.0 * x)
-    return (exp_2x - 1.0) / (exp_2x + 1.0)
+    """Numerically stable tanh via exp (Triton 3.x compatibility: no tl.tanh).
+
+    Uses the sign-formulation: tanh(x) = sign(x) * (1 - e^{-2|x|}) / (1 + e^{-2|x|}).
+    The exponential term exp(-2*|x|) is bounded in [0, 1] for all x, so
+    overflow is impossible — no clamping needed.
+    """
+    abs_x = tl.abs(x)
+    exp_neg_2abs = tl.exp(-2.0 * abs_x)
+    sign = tl.where(x < 0.0, -1.0, 1.0)
+    return sign * (1.0 - exp_neg_2abs) / (1.0 + exp_neg_2abs)
 
 
 @triton.jit
