@@ -2,3 +2,4 @@
 
 from .add import add
 from .softmax import softmax
+from .attention import attention
