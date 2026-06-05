@@ -29,7 +29,6 @@ def test_softmax_correctness():
     ]
 
     np.random.seed(42)
-    all_passed = True
     for shape in test_shapes:
         x = np.random.randn(*shape).astype(np.float32)
         out = softmax(x)
@@ -40,9 +39,6 @@ def test_softmax_correctness():
         status = "PASS" if passed else "FAIL"
         print(f"[{status}] shape={str(shape):>12} | max_diff={max_diff:.2e}")
         assert passed, f"Softmax failed for shape={shape}, max_diff={max_diff:.2e}"
-        all_passed &= passed
-
-    return all_passed
 
 
 def test_softmax_numerical_stability():
@@ -71,9 +67,6 @@ def test_softmax_numerical_stability():
         status = "PASS" if passed else "FAIL"
         print(f"[{status}] {name:<20} | NaN={has_nan} Inf={has_inf} sum_close={sums_close} max_diff={max_diff:.2e}")
         assert passed, f"Numerical stability failed for {name}"
-        all_passed &= passed
-
-    return all_passed
 
 
 def test_softmax_uniform_input():
@@ -90,9 +83,6 @@ def test_softmax_uniform_input():
         status = "PASS" if passed else "FAIL"
         print(f"[{status}] N={N:>4} | max_diff={max_diff:.2e}")
         assert passed, f"Uniform input failed for N={N}, max_diff={max_diff:.2e}"
-        all_passed &= passed
-
-    return all_passed
 
 
 def test_softmax_1d_input():
@@ -167,6 +157,25 @@ def test_softmax_dtype_conversion():
     print("[PASS] All dtype conversion tests passed")
 
 
+def test_softmax_non_contiguous():
+    """Non-contiguous (strided) input should be handled correctly."""
+    print("\n=== Softmax Non-contiguous Input Test ===")
+
+    # Create 2D matrix, take every-other row (strided).
+    matrix = np.random.randn(8, 128).astype(np.float32)
+    strided = matrix[::2, :]  # every other row — non-contiguous in rows
+    assert not strided.flags["C_CONTIGUOUS"], "Test precondition: strided slice should be non-contiguous"
+
+    out = softmax(strided)
+    ref = _softmax_ref(strided)
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
+    print(f"[{'PASS' if passed else 'FAIL'}] Strided rows  | max_diff={max_diff:.2e}")
+    assert passed, f"Non-contiguous softmax failed, max_diff={max_diff:.2e}"
+
+    print("[PASS] Non-contiguous input test passed")
+
+
 def test_softmax_axis_validation():
     """axis=0 should raise NotImplementedError."""
     print("\n=== Softmax Axis Validation Test ===")
@@ -181,7 +190,7 @@ def test_softmax_axis_validation():
     # axis=0 should raise
     try:
         softmax(x, axis=0)
-        assert False, "Expected NotImplementedError for axis=0"
+        raise RuntimeError("Expected NotImplementedError for axis=0")
     except NotImplementedError:
         print("[PASS] axis=0 raises NotImplementedError")
 
@@ -196,6 +205,7 @@ if __name__ == "__main__":
     test_softmax_1d_input()
     test_softmax_empty_array()
     test_softmax_dtype_conversion()
+    test_softmax_non_contiguous()
     test_softmax_axis_validation()
     print("\n" + "=" * 45)
     print("All Softmax tests PASSED")

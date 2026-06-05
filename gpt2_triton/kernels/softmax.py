@@ -45,8 +45,11 @@ def _softmax_kernel(
         Number of columns processed per loop iteration.
     """
     row_idx = tl.program_id(0)
-    x_ptr = tl.cast(X + row_idx * stride_x, tl.pointer_type(tl.float32))
-    y_ptr = tl.cast(Y + row_idx * stride_y, tl.pointer_type(tl.float32))
+    # Cast raw pointers to typed float32 pointers before arithmetic
+    X = tl.cast(X, tl.pointer_type(tl.float32))
+    Y = tl.cast(Y, tl.pointer_type(tl.float32))
+    x_ptr = X + row_idx * stride_x
+    y_ptr = Y + row_idx * stride_y
 
     offs = tl.arange(0, BLOCK_SIZE)
 
@@ -64,14 +67,14 @@ def _softmax_kernel(
     for start in range(0, N, BLOCK_SIZE):
         cols = start + offs
         mask = cols < N
-        x = tl.load(x_ptr + cols, mask=mask, other=0.0)
+        x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
         row_sum += tl.sum(tl.exp(x - row_max), axis=0)
 
     # --- Pass 3: compute softmax values ---
     for start in range(0, N, BLOCK_SIZE):
         cols = start + offs
         mask = cols < N
-        x = tl.load(x_ptr + cols, mask=mask, other=0.0)
+        x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
         y = tl.exp(x - row_max) / row_sum
         tl.store(y_ptr + cols, y, mask=mask)
 
@@ -120,7 +123,10 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     y_dev = gpu.allocate(x.shape, np.float32)
     stride_y = y_dev.shape[1]  # row stride for output in elements
 
-    BLOCK_SIZE = 1024
+    # Adaptive block size: smallest power-of-2 >= N, capped at 1024 to avoid
+    # wasting lanes for very small rows. Larger rows iterate in chunks.
+    max_block = 1024
+    BLOCK_SIZE = triton.next_power_of_2(min(N, max_block))
     grid = (M,)  # one program per row
 
     _softmax_kernel[grid](
