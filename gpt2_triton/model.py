@@ -34,8 +34,13 @@ class GPT2Model:
         n_layer = config.n_layer
 
         # --- Embedding tables (stored as-is, (vocab, n_embd) and (pos, n_embd)) ---
+        # Wte also serves as lm_head (tied embeddings).
+        # Pre-transpose for gemm(hidden, wte.T): store (n_embd, vocab_size) C-contiguous.
         self.wte = np.require(
             weights["wte.weight"], dtype=np.float32, requirements=["C_CONTIGUOUS"]
+        )
+        self.lm_head_w = np.require(
+            self.wte.T, dtype=np.float32, requirements=["C_CONTIGUOUS"]
         )
         self.wpe = np.require(
             weights["wpe.weight"], dtype=np.float32, requirements=["C_CONTIGUOUS"]
@@ -196,7 +201,7 @@ class GPT2Model:
                        config.layer_norm_epsilon)
 
         # --- LM head ---
-        logits = gemm(h, self.wte.T)  # (seq, n_embd) @ (n_embd, vocab) -> (seq, vocab)
+        logits = gemm(h, self.lm_head_w)  # (seq, n_embd) @ (n_embd, vocab) -> (seq, vocab)
         return logits.reshape(1, -1, config.vocab_size)
 
     # ------------------------------------------------------------------
