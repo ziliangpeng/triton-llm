@@ -52,7 +52,6 @@ def test_softmax_numerical_stability():
         ("Wide range", np.random.randn(4, 512).astype(np.float32) * 100),
     ]
 
-    all_passed = True
     for name, x in test_cases:
         out = softmax(x)
         ref = _softmax_ref(x)
@@ -73,7 +72,6 @@ def test_softmax_uniform_input():
     """All-equal input → each output = 1/N."""
     print("\n=== Softmax Uniform Input Test ===")
 
-    all_passed = True
     for N in [4, 16, 128, 777]:
         x = np.full((2, N), 2.5, dtype=np.float32)
         out = softmax(x)
@@ -102,8 +100,6 @@ def test_softmax_1d_input():
     status = "PASS" if passed else "FAIL"
     print(f"[{status}] N={N} | max_diff={max_diff:.2e}")
     assert passed, f"1D softmax failed, max_diff={max_diff:.2e}"
-
-    return passed
 
 
 def test_softmax_empty_array():
