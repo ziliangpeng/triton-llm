@@ -77,6 +77,9 @@ def _softmax_kernel(
         # Pass 1: online softmax — compute max and exp-sum simultaneously.
         #   When a new tile has a higher max, the running sum is rescaled by
         #   exp(old_max - new_max) before adding the new tile's contributions.
+        #   ⚠️  Guard against NaN: when row_max == -inf the rescale factor
+        #      is set to 1.0 (instead of exp(NaN)), and when new_max == -inf
+        #      the tile's contribution is 0.0 (instead of exp(NaN) → NaN).
         row_max = -float("inf")
         row_sum = 0.0
         for start in range(0, N, BLOCK_SIZE):
@@ -85,7 +88,9 @@ def _softmax_kernel(
             x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
             block_max = tl.max(x, axis=0)
             new_max = tl.maximum(row_max, block_max)
-            row_sum = row_sum * tl.exp(row_max - new_max) + tl.sum(tl.exp(x - new_max), axis=0)
+            rescale = tl.where(row_max == -float("inf"), 1.0, tl.exp(row_max - new_max))
+            block_sum = tl.where(new_max == -float("inf"), 0.0, tl.sum(tl.exp(x - new_max), axis=0))
+            row_sum = row_sum * rescale + block_sum
             row_max = new_max
 
         # Pass 2: compute softmax values and store
