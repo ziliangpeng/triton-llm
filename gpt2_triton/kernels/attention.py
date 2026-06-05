@@ -74,6 +74,9 @@ def _attention_kernel(
 
     # --- Single tiled pass over K, V ---
     for start in range(0, N, BLOCK_SIZE):
+        # Early exit: blocks past the causal boundary contribute nothing
+        if start > row_idx:
+            break
         offs_n = start + tl.arange(0, BLOCK_SIZE)
         mask_n = offs_n < N
 
@@ -144,6 +147,8 @@ def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
     N, d_k = q.shape
     assert k.shape == (N, d_k), f"K shape {k.shape} != {(N, d_k)}"
     assert v.shape == (N, d_k), f"V shape {v.shape} != {(N, d_k)}"
+    assert d_k > 0 and (d_k & (d_k - 1)) == 0, \
+        f"d_k ({d_k}) must be a positive power of 2 for Triton compilation"
 
     if N == 0 or d_k == 0:
         return np.empty((N, d_k), dtype=np.float32)
