@@ -128,9 +128,10 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     stride_y = y_dev.shape[1]  # row stride for output in elements
 
     # Adaptive block size: smallest power-of-2 >= N, capped at 1024 to avoid
-    # wasting lanes for very small rows. Larger rows iterate in chunks.
+    # wasting lanes for very small rows. Minimum 32 (warp size on NVIDIA).
     max_block = 1024
-    BLOCK_SIZE = triton.next_power_of_2(min(N, max_block))
+    min_block = 32
+    BLOCK_SIZE = max(min_block, triton.next_power_of_2(min(N, max_block)))
     grid = (M,)  # one program per row
 
     _softmax_kernel[grid](
