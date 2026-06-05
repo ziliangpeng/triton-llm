@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.yaml
+!docs/**/*.yaml
+pr_step2_description.md
+triton-llm-test-pod.yaml

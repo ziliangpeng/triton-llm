@@ -79,31 +79,51 @@ def test_gemm_edge_cases():
     """Test edge cases."""
     print("\n=== GEMM Edge Cases ===")
 
-    # K=0 should raise or handle gracefully
-    try:
-        a = np.random.randn(10, 0).astype(np.float32)
-        b = np.random.randn(0, 10).astype(np.float32)
-        _ = gemm(a, b)
-        print("[INFO] K=0 case handled (returned zero matrix)")
-    except AssertionError:
-        print("[PASS] K=0 correctly rejected")
+    # K=0 should return a zero matrix (gemm handles it explicitly now)
+    a = np.random.randn(10, 0).astype(np.float32)
+    b = np.random.randn(0, 10).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (10, 10), f"Expected shape (10, 10), got {out.shape}"
+    assert np.all(out == 0.0), "K=0 result should be all zeros"
+    print("[PASS] K=0 case handled (returned zero matrix)")
 
-    # Mismatched K should raise
+    # M=0 should return a zero matrix
+    a = np.random.randn(0, 20).astype(np.float32)
+    b = np.random.randn(20, 10).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (0, 10), f"Expected shape (0, 10), got {out.shape}"
+    assert out.size == 0, "M=0 result should be empty"
+    print("[PASS] M=0 case handled (returned zero matrix)")
+
+    # N=0 should return a zero matrix
+    a = np.random.randn(10, 20).astype(np.float32)
+    b = np.random.randn(20, 0).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (10, 0), f"Expected shape (10, 0), got {out.shape}"
+    assert out.size == 0, "N=0 result should be empty"
+    print("[PASS] N=0 case handled (returned zero matrix)")
+
+    # Mismatched K should raise AssertionError
+    a = np.random.randn(10, 20).astype(np.float32)
+    b = np.random.randn(30, 10).astype(np.float32)
     try:
-        a = np.random.randn(10, 20).astype(np.float32)
-        b = np.random.randn(30, 10).astype(np.float32)
         _ = gemm(a, b)
-        assert False, "Should have raised AssertionError"
+        raise RuntimeError("Should have raised AssertionError")
     except AssertionError:
         print("[PASS] Mismatched K correctly rejected")
+
+    return True
 
 
 if __name__ == "__main__":
     print("Running GEMM unit tests on current GPU backend...\n")
     correctness = test_gemm_correctness()
     perf = test_gemm_performance()
-    test_gemm_edge_cases()
+    edge_cases = test_gemm_edge_cases()
 
     print("\n" + "=" * 45)
-    print("All GEMM tests PASSED" if correctness else "Some tests FAILED")
+    if correctness and edge_cases:
+        print("All GEMM tests PASSED")
+    else:
+        print("Some tests FAILED")
     print("=" * 45)

@@ -64,9 +64,13 @@ def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     K2, N = b.shape
     assert K == K2, "Inner dimensions must match"
 
-    # Ensure C-contiguous to avoid data corruption on device
-    a = np.ascontiguousarray(a)
-    b = np.ascontiguousarray(b)
+    # Handle zero-dimension edge cases: return zero matrix to avoid GPU allocator issues
+    if K == 0 or M == 0 or N == 0:
+        return np.zeros((M, N), dtype=np.float32)
+
+    # Ensure C-contiguous float32 to avoid data corruption on device
+    a = np.require(a, dtype=np.float32, requirements=['C_CONTIGUOUS'])
+    b = np.require(b, dtype=np.float32, requirements=['C_CONTIGUOUS'])
 
     # Derive strides from actual array metadata (in elements, not bytes)
     stride_am, stride_ak = a.strides[0] // a.itemsize, a.strides[1] // a.itemsize
