@@ -95,14 +95,12 @@ def _attention_kernel(
         s = tl.sum(q[None, :] * k, axis=1)
 
         # Causal mask: positions after row_idx get -inf
-        s = tl.where(offs_n <= row_idx, s, -float("inf"))
+        s = tl.where(k_causal, s, -float("inf"))
 
         # Online softmax: update running max and rescale
         block_max = tl.max(s, axis=0)
         new_max = tl.maximum(row_max, block_max)
-        rescale = tl.where(
-            start == 0, 1.0, tl.exp(row_max - new_max)
-        )
+        rescale = tl.exp(row_max - new_max)
         p = tl.exp(s - new_max)
         block_sum = tl.sum(p, axis=0)
 
