@@ -66,7 +66,7 @@ def gelu(x: np.ndarray) -> np.ndarray:
     y : np.ndarray, same shape as ``x``.
     """
     if x.size == 0:
-        return np.empty_like(x, dtype=np.float32)
+        return np.empty(x.shape, dtype=np.float32)
 
     x_dev = gpu.to_device(np.require(x, dtype=np.float32, requirements=['C_CONTIGUOUS']))
     y_dev = gpu.allocate(x.shape, np.float32)
