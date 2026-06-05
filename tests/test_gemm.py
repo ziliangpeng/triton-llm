@@ -79,16 +79,19 @@ def test_gemm_edge_cases():
     """Test edge cases."""
     print("\n=== GEMM Edge Cases ===")
 
-    # K=0 should raise or handle gracefully
+    # K=0 should return a zero matrix (gemm handles it explicitly now)
     try:
         a = np.random.randn(10, 0).astype(np.float32)
         b = np.random.randn(0, 10).astype(np.float32)
-        _ = gemm(a, b)
-        print("[INFO] K=0 case handled (returned zero matrix)")
-    except AssertionError:
-        print("[PASS] K=0 correctly rejected")
+        out = gemm(a, b)
+        assert out.shape == (10, 10), f"Expected shape (10, 10), got {out.shape}"
+        assert np.all(out == 0.0), "K=0 result should be all zeros"
+        print("[PASS] K=0 case handled (returned zero matrix)")
+    except Exception as e:
+        print(f"[FAIL] K=0 case raised {type(e).__name__}: {e}")
+        return False
 
-    # Mismatched K should raise
+    # Mismatched K should raise AssertionError
     try:
         a = np.random.randn(10, 20).astype(np.float32)
         b = np.random.randn(30, 10).astype(np.float32)
@@ -96,14 +99,22 @@ def test_gemm_edge_cases():
         assert False, "Should have raised AssertionError"
     except AssertionError:
         print("[PASS] Mismatched K correctly rejected")
+    except Exception as e:
+        print(f"[FAIL] Mismatched K raised wrong exception: {type(e).__name__}: {e}")
+        return False
+
+    return True
 
 
 if __name__ == "__main__":
     print("Running GEMM unit tests on current GPU backend...\n")
     correctness = test_gemm_correctness()
     perf = test_gemm_performance()
-    test_gemm_edge_cases()
+    edge_cases = test_gemm_edge_cases()
 
     print("\n" + "=" * 45)
-    print("All GEMM tests PASSED" if correctness else "Some tests FAILED")
+    if correctness and edge_cases:
+        print("All GEMM tests PASSED")
+    else:
+        print("Some tests FAILED")
     print("=" * 45)

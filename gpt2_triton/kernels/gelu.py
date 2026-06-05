@@ -15,6 +15,14 @@ from .. import gpu
 
 
 @triton.jit
+def _tanh(x):
+    """Numerically stable tanh via exp (Triton 3.x compatibility: no tl.tanh)."""
+    x = tl.clamp(x, -20.0, 20.0)
+    exp_2x = tl.exp(2.0 * x)
+    return (exp_2x - 1.0) / (exp_2x + 1.0)
+
+
+@triton.jit
 def _gelu_kernel(
     X,
     Y,
@@ -34,7 +42,7 @@ def _gelu_kernel(
 
     # Tanh approximation of GELU
     sqrt_2_over_pi = 0.7978845608028654
-    y = 0.5 * x * (1.0 + tl.tanh(sqrt_2_over_pi * (x + 0.044715 * x * x * x)))
+    y = 0.5 * x * (1.0 + _tanh(sqrt_2_over_pi * (x + 0.044715 * x * x * x)))
 
     tl.store(Y + offsets, y, mask=mask)
 
