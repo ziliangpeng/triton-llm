@@ -1,8 +1,8 @@
 """Triton Embedding + Positional Encoding Kernel for GPT-2 inference (CUDA + HIP).
 
 Combines token embedding (gather from vocabulary weight matrix) with learned
-positional encoding in a single fused kernel.  One program per token position
-handles both gathers and the element-wise addition.
+positional encoding in a single fused kernel.  Uses a 2-D grid so that large
+embedding dimensions (>BLOCK_SIZE) are handled correctly.
 """
 
 import triton
@@ -17,7 +17,7 @@ def _embedding_kernel(
     weight,            # float32 device pointer, shape (vocab_size, n_embd)
     pos_weight,        # float32 device pointer, shape (max_position, n_embd)
     output,            # float32 device pointer, shape (batch * seq_len, n_embd)
-    vocab_size,        # int — for bounds checking
+    vocab_size,        # int — reserved for future bounds checking
     n_embd,            # int — embedding dimension
     seq_len,           # int — sequence length (used to compute position index)
     stride_weight,     # int — weight row stride in elements
@@ -26,13 +26,14 @@ def _embedding_kernel(
 ):
     """Fused token embedding + positional encoding for a single token position.
 
-    Each program handles one position ``(b, s)`` where ``b`` indexes the batch
-    and ``s`` indexes the sequence position.  The kernel::
+    Uses a 2-D grid ``(batch * seq_len, n_block)`` where each program handles
+    a contiguous chunk of the embedding dimension for one position.
+    The kernel::
 
         1. Loads ``token_id = token_ids[b, s]``
-        2. Gathers ``weight[token_id, :]``
-        3. Gathers ``pos_weight[s, :]``
-        4. Stores ``output[b, s, :] = weight[token_id, :] + pos_weight[s, :]``
+        2. Gathers ``weight[token_id, col_start:col_start+BLOCK_SIZE]``
+        3. Gathers ``pos_weight[s, col_start:col_start+BLOCK_SIZE]``
+        4. Stores ``output[b, s, col_start:] = emb_chunk + pos_chunk``
 
     Parameters
     ----------
@@ -45,11 +46,11 @@ def _embedding_kernel(
     output : int
         Raw int64 device pointer for the float32 output.
     vocab_size : int
-        Vocabulary size for bounds checking.
+        Vocabulary size (reserved for future bounds checking).
     n_embd : int
         Embedding dimension.
     seq_len : int
-        Sequence length (used to derive ``s = pid % seq_len``).
+        Sequence length (used to derive ``s = pid_x % seq_len``).
     stride_weight : int
         Row stride of ``weight`` in elements (not bytes).
     stride_pos : int
@@ -57,7 +58,8 @@ def _embedding_kernel(
     BLOCK_SIZE : tl.constexpr
         Number of embedding dimensions processed per program.
     """
-    pid = tl.program_id(0)  # flat index over (batch * seq_len)
+    pid_x = tl.program_id(0)  # flat index over (batch * seq_len)
+    pid_y = tl.program_id(1)  # block index over n_embd dimension
 
     # Cast raw int64 pointers to typed pointers (Triton 3.x compatibility)
     output = tl.cast(output, tl.pointer_type(tl.float32))
@@ -66,26 +68,26 @@ def _embedding_kernel(
     token_ids = tl.cast(token_ids, tl.pointer_type(tl.int32))
 
     # Position within the sequence (column index)
-    s = pid % seq_len
+    s = pid_x % seq_len
 
     # Load the token ID for this position
-    token_id = tl.load(token_ids + pid)
+    token_id = tl.load(token_ids + pid_x)
 
     # Tile over the embedding dimension
-    offs = tl.arange(0, BLOCK_SIZE)
+    offs = pid_y * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_embd
 
-    # Gather token embedding: weight[token_id, :]
+    # Gather token embedding: weight[token_id, offs]
     emb_ptrs = weight + token_id * stride_weight + offs
     emb = tl.load(emb_ptrs, mask=mask, other=0.0)
 
-    # Gather positional encoding: pos_weight[s, :]
+    # Gather positional encoding: pos_weight[s, offs]
     pos_ptrs = pos_weight + s * stride_pos + offs
     pos = tl.load(pos_ptrs, mask=mask, other=0.0)
 
     # Combine and store
     out = emb + pos
-    tl.store(output + pid * n_embd + offs, out, mask=mask)
+    tl.store(output + pid_x * n_embd + offs, out, mask=mask)
 
 
 def embedding(
@@ -150,8 +152,9 @@ def embedding(
     pos_weight_dev = gpu.to_device(pos_weight)
     output_dev = gpu.allocate(flat_shape, np.float32)
 
-    BLOCK_SIZE = 1024
-    grid = (batch * seq_len,)
+    BLOCK_SIZE = min(1024, triton.next_power_of_2(n_embd))
+    n_block = triton.cdiv(n_embd, BLOCK_SIZE)
+    grid = (batch * seq_len, n_block)
 
     _embedding_kernel[grid](
         token_ids_dev.data_ptr(),
