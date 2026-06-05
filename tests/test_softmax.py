@@ -219,6 +219,14 @@ def test_softmax_axis_validation():
     except NotImplementedError:
         print("[PASS] axis=1 on 1D raises NotImplementedError")
 
+    # 3D input should raise NotImplementedError
+    x_3d = np.random.randn(2, 4, 128).astype(np.float32)
+    try:
+        softmax(x_3d)
+        raise RuntimeError("Expected NotImplementedError for 3D input")
+    except NotImplementedError:
+        print("[PASS] 3D input raises NotImplementedError")
+
     print("\n[PASS] All axis validation tests passed")
 
 

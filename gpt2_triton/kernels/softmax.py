@@ -107,6 +107,10 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
 
     # Handle 1D input by reshaping to (1, N)
     original_ndim = x.ndim
+    if x.ndim not in (1, 2):
+        raise NotImplementedError(
+            f"softmax on {x.ndim}D input is not implemented (only 1D and 2D are supported)"
+        )
     if x.ndim == 1:
         x = x.reshape(1, -1)
 
