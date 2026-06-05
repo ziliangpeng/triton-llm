@@ -1,12 +1,8 @@
-"""
-Triton Softmax Kernel (CUDA + HIP) — numerically stable two-pass softmax.
+"""Triton Softmax Kernel (CUDA + HIP) — numerically stable, fusion-optimized.
 
-Uses the standard two-pass reduction pattern:
-  Pass 1: row_max = max(x_row)
-  Pass 2: row_sum = sum(exp(x_row - row_max))
-  Pass 3: y = exp(x - row_max) / row_sum
-
-Each Triton program handles one row of the input matrix.
+Two specialized code paths selected at Triton JIT compile time:
+  Single-block (N <= BLOCK_SIZE): 1 global load, 2-pass in registers.
+  Multi-block  (N >  BLOCK_SIZE): tiled 3-pass for arbitrarily large rows.
 """
 
 import triton
@@ -24,8 +20,13 @@ def _softmax_kernel(
     stride_x,
     stride_y,
     BLOCK_SIZE: tl.constexpr,
+    SINGLE_BLOCK: tl.constexpr,
 ):
-    """Numerically stable two-pass softmax on a single matrix row.
+    """Numerically stable softmax on a single matrix row.
+
+    Uses two specialized code paths selected at JIT compile time:
+    - ``SINGLE_BLOCK=True`` (N <= BLOCK_SIZE): single global load, 2-pass in registers.
+    - ``SINGLE_BLOCK=False`` (N > BLOCK_SIZE): tiled 3-pass for arbitrarily large rows.
 
     Parameters
     ----------
@@ -43,6 +44,9 @@ def _softmax_kernel(
         Row stride of ``Y`` in elements.
     BLOCK_SIZE : tl.constexpr
         Number of columns processed per loop iteration.
+    SINGLE_BLOCK : tl.constexpr
+        If True, the row fits in BLOCK_SIZE — use single-load fast path.
+        If False, fall back to tiled 3-pass for multi-block rows.
     """
     row_idx = tl.program_id(0)
     # Cast raw pointers to typed float32 pointers before arithmetic
@@ -52,31 +56,48 @@ def _softmax_kernel(
     y_ptr = Y + row_idx * stride_y
 
     offs = tl.arange(0, BLOCK_SIZE)
+    cols = offs
+    mask = cols < N
 
-    # --- Pass 1: compute row-wise maximum ---
-    row_max = -float("inf")
-    for start in range(0, N, BLOCK_SIZE):
-        cols = start + offs
-        mask = cols < N
+    if SINGLE_BLOCK:
+        # --- Fast path: single global load, 2-pass in registers ---
+        # Load the row once into registers.
         x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
-        block_max = tl.max(x, axis=0)
-        row_max = tl.maximum(row_max, block_max)
 
-    # --- Pass 2: compute sum of exp(x - row_max) ---
-    row_sum = 0.0
-    for start in range(0, N, BLOCK_SIZE):
-        cols = start + offs
-        mask = cols < N
-        x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
-        row_sum += tl.sum(tl.exp(x - row_max), axis=0)
+        # Pass 1: compute max and sum-of-exp from the same loaded data.
+        row_max = tl.max(x, axis=0)
+        e = tl.exp(x - row_max)
+        row_sum = tl.sum(e, axis=0)
 
-    # --- Pass 3: compute softmax values ---
-    for start in range(0, N, BLOCK_SIZE):
-        cols = start + offs
-        mask = cols < N
-        x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
-        y = tl.exp(x - row_max) / row_sum
+        # Store result.
+        y = e / row_sum
         tl.store(y_ptr + cols, y, mask=mask)
+    else:
+        # --- Tiled 3-pass path: for rows larger than BLOCK_SIZE ---
+        # Pass 1: compute row-wise maximum
+        row_max = -float("inf")
+        for start in range(0, N, BLOCK_SIZE):
+            cols = start + offs
+            mask = cols < N
+            x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
+            block_max = tl.max(x, axis=0)
+            row_max = tl.maximum(row_max, block_max)
+
+        # Pass 2: compute sum of exp(x - row_max)
+        row_sum = 0.0
+        for start in range(0, N, BLOCK_SIZE):
+            cols = start + offs
+            mask = cols < N
+            x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
+            row_sum += tl.sum(tl.exp(x - row_max), axis=0)
+
+        # Pass 3: compute softmax values
+        for start in range(0, N, BLOCK_SIZE):
+            cols = start + offs
+            mask = cols < N
+            x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
+            y = tl.exp(x - row_max) / row_sum
+            tl.store(y_ptr + cols, y, mask=mask)
 
 
 def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -144,6 +165,7 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
         M, N,
         stride_x, stride_y,
         BLOCK_SIZE,
+        SINGLE_BLOCK=(N <= BLOCK_SIZE),
     )
 
     gpu.synchronize()
