@@ -84,9 +84,10 @@ def _attention_kernel(
         # Load K block: (BLOCK_SIZE, D_K)
         # Only load elements within the causal boundary (offs_n <= row_idx)
         # to avoid wasted global memory bandwidth on masked-out positions.
-        k_causal = offs_n[:, None] <= row_idx
+        k_causal = offs_n <= row_idx
+        k_mask_1d = mask_n & k_causal
         # Broadcast to (BLOCK_SIZE, D_K) — match pointer block shape exactly.
-        k_mask = tl.broadcast_to(mask_n[:, None] & k_causal, (BLOCK_SIZE, D_K))
+        k_mask = tl.broadcast_to(k_mask_1d[:, None], (BLOCK_SIZE, D_K))
         k_ptrs = K + offs_n[:, None] * stride_k + offs_d[None, :]
         k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
@@ -100,7 +101,7 @@ def _attention_kernel(
         block_max = tl.max(s, axis=0)
         new_max = tl.maximum(row_max, block_max)
         rescale = tl.where(
-            row_max == -float("inf"), 1.0, tl.exp(row_max - new_max)
+            start == 0, 1.0, tl.exp(row_max - new_max)
         )
         p = tl.exp(s - new_max)
         block_sum = tl.sum(p, axis=0)
