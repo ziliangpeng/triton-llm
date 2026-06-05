@@ -18,7 +18,7 @@ from .. import gpu
 @triton.jit
 def _attention_kernel(
     Q, K, V, O,
-    N, d_k,
+    N,
     stride_q, stride_k, stride_v, stride_o,
     BLOCK_SIZE: tl.constexpr,
     D_K: tl.constexpr,
@@ -43,8 +43,6 @@ def _attention_kernel(
         Raw int64 device pointer for the output.
     N : int
         Sequence length.
-    d_k : int
-        Head dimension.
     stride_q, stride_k, stride_v, stride_o : int
         Row strides in elements (not bytes).
     BLOCK_SIZE : tl.constexpr
@@ -155,8 +153,8 @@ def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
     assert d_k > 0 and (d_k & (d_k - 1)) == 0, \
         f"d_k ({d_k}) must be a positive power of 2 for Triton compilation"
 
-    if N == 0 or d_k == 0:
-        return np.empty((N, d_k), dtype=np.float32)
+    if N == 0:
+        return np.empty((0, d_k), dtype=np.float32)
 
     # Ensure C-contiguous float32
     q = np.require(q, dtype=np.float32, requirements=["C_CONTIGUOUS"])
@@ -181,7 +179,7 @@ def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
 
     _attention_kernel[grid](
         q_dev.data_ptr(), k_dev.data_ptr(), v_dev.data_ptr(), o_dev.data_ptr(),
-        N, d_k,
+        N,
         stride_q, stride_k, stride_v, stride_o,
         BLOCK_SIZE=BLOCK_SIZE,
         D_K=d_k,
