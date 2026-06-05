@@ -91,6 +91,30 @@ def test_gemm_edge_cases():
         print(f"[FAIL] K=0 case raised {type(e).__name__}: {e}")
         return False
 
+    # M=0 should return a zero matrix
+    try:
+        a = np.random.randn(0, 20).astype(np.float32)
+        b = np.random.randn(20, 10).astype(np.float32)
+        out = gemm(a, b)
+        assert out.shape == (0, 10), f"Expected shape (0, 10), got {out.shape}"
+        assert out.size == 0, "M=0 result should be empty"
+        print("[PASS] M=0 case handled (returned zero matrix)")
+    except Exception as e:
+        print(f"[FAIL] M=0 case raised {type(e).__name__}: {e}")
+        return False
+
+    # N=0 should return a zero matrix
+    try:
+        a = np.random.randn(10, 20).astype(np.float32)
+        b = np.random.randn(20, 0).astype(np.float32)
+        out = gemm(a, b)
+        assert out.shape == (10, 0), f"Expected shape (10, 0), got {out.shape}"
+        assert out.size == 0, "N=0 result should be empty"
+        print("[PASS] N=0 case handled (returned zero matrix)")
+    except Exception as e:
+        print(f"[FAIL] N=0 case raised {type(e).__name__}: {e}")
+        return False
+
     # Mismatched K should raise AssertionError
     try:
         a = np.random.randn(10, 20).astype(np.float32)

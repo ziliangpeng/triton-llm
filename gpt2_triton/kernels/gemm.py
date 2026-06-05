@@ -64,8 +64,8 @@ def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     K2, N = b.shape
     assert K == K2, "Inner dimensions must match"
 
-    # Handle K=0 edge case: result is a zero matrix (avoids Triton compilation issues with empty dims)
-    if K == 0:
+    # Handle zero-dimension edge cases: return zero matrix to avoid GPU allocator issues
+    if K == 0 or M == 0 or N == 0:
         return np.zeros((M, N), dtype=np.float32)
 
     # Ensure C-contiguous to avoid data corruption on device

@@ -62,7 +62,7 @@ def gelu(x: np.ndarray) -> np.ndarray:
     if x.size == 0:
         return np.empty_like(x, dtype=np.float32)
 
-    x_dev = gpu.to_device(np.ascontiguousarray(x).astype(np.float32))
+    x_dev = gpu.to_device(np.ascontiguousarray(x, dtype=np.float32))
     y_dev = gpu.allocate(x.shape, np.float32)
     N = x.size
     BLOCK_SIZE = 1024
