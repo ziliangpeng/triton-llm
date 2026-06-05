@@ -108,7 +108,7 @@ def test_gemm_edge_cases():
     b = np.random.randn(30, 10).astype(np.float32)
     try:
         _ = gemm(a, b)
-        assert False, "Should have raised AssertionError"
+        raise RuntimeError("Should have raised AssertionError")
     except AssertionError:
         print("[PASS] Mismatched K correctly rejected")
 

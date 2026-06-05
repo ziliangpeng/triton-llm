@@ -80,4 +80,4 @@ def gelu(x: np.ndarray) -> np.ndarray:
     )
 
     gpu.synchronize()
-    return gpu.to_host(y_dev).reshape(x.shape)
+    return gpu.to_host(y_dev)
