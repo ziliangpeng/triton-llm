@@ -88,15 +88,6 @@ def _detect_backend():
 def _load_runtime(backend):
     """Load the appropriate runtime library and set up argtypes."""
     if backend == "cuda":
-        # Try RTLD_DEFAULT first (avoids CUDA 35 invalid-value on some systems)
-        try:
-            lib = ctypes.CDLL(None)
-            # Verify cudaMalloc is actually reachable
-            lib.cudaMalloc
-            _setup_argtypes(lib, "cuda")
-            return lib
-        except (AttributeError, OSError):
-            pass
         for name in CUDA_LIBRARIES:
             try:
                 lib = ctypes.CDLL(name)
