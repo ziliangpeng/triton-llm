@@ -22,7 +22,6 @@ def test_add_correctness():
     ]
 
     np.random.seed(42)
-    all_passed = True
     for size in test_sizes:
         x = np.random.randn(size).astype(np.float32)
         y = np.random.randn(size).astype(np.float32)
@@ -34,9 +33,6 @@ def test_add_correctness():
         status = "PASS" if passed else "FAIL"
         print(f"[{status}] N={size:>5} | max_diff={max_diff:.2e}")
         assert passed, f"Add failed for N={size}, max_diff={max_diff:.2e}"
-        all_passed &= passed
-
-    return all_passed
 
 
 def test_add_edge_cases():
@@ -180,7 +176,7 @@ def test_add_shape_mismatch():
 
     try:
         add(x, y)
-        assert False, "Expected AssertionError for shape mismatch"
+        raise RuntimeError("Expected AssertionError for shape mismatch")
     except AssertionError:
         print("[PASS] Shape mismatch correctly raises AssertionError")
 

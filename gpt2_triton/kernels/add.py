@@ -25,12 +25,12 @@ def _add_kernel(
 
     Parameters
     ----------
-    X : tl.pointer_type(tl.float32)
-        Device pointer for the first operand.
-    Y : tl.pointer_type(tl.float32)
-        Device pointer for the second operand.
-    Z : tl.pointer_type(tl.float32)
-        Device pointer for the output.
+    X : int
+        Raw int64 device pointer for the first operand (cast to ``float32`` inside).
+    Y : int
+        Raw int64 device pointer for the second operand (cast to ``float32`` inside).
+    Z : int
+        Raw int64 device pointer for the output (cast to ``float32`` inside).
     N : int
         Total number of elements (product of all dimensions).
     BLOCK_SIZE : tl.constexpr
