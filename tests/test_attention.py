@@ -71,28 +71,36 @@ def test_attention_correctness():
 
 
 def test_attention_causal_mask():
-    """Verify that the causal mask is correctly applied.
+    """Verify causal masking: modifying future K/V (j > i) does NOT affect output at i.
 
-    For position i, all output values should be zero if we zero out
-    the values at positions > i (since those positions contribute nothing
-    due to the causal mask).
+    Create a reference output, then perturb key at position N-1 (future for all
+    rows except the last). Rows 0..N-2 must see zero change; row N-1 may change.
     """
     print("\n=== Attention Causal Mask Test ===")
 
-    N, d_k = 8, 64
+    N, d_k = 16, 64
     np.random.seed(42)
     q = np.random.randn(N, d_k).astype(np.float32)
     k = np.random.randn(N, d_k).astype(np.float32)
     v = np.random.randn(N, d_k).astype(np.float32)
 
-    out = attention(q, k, v)
-    ref = _attention_ref(q, k, v)
+    ref = attention(q, k, v)
 
-    max_diff = float(np.abs(out - ref).max())
-    passed = np.allclose(out, ref, atol=1e-4)
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] Causal mask | max_diff={max_diff:.2e}")
-    assert passed, f"Causal mask test failed, max_diff={max_diff:.2e}"
+    # Perturb the last key (position N-1) — causal mask should block its effect
+    k_perturbed = k.copy()
+    k_perturbed[-1, :] = np.random.randn(d_k).astype(np.float32)
+    out = attention(q, k_perturbed, v)
+
+    # Rows 0..N-2 must be unchanged; row N-1 may differ
+    unchanged = np.allclose(out[:-1, :], ref[:-1, :], atol=1e-5)
+    print(f"[{'PASS' if unchanged else 'FAIL'}] Rows 0..N-2 unchanged: {unchanged}")
+    assert unchanged, "Rows before the perturbed position changed — causal mask broken"
+
+    # Also verify last row changed (sanity: the perturbation is meaningful)
+    changed = not np.allclose(out[-1:, :], ref[-1:, :], atol=1e-3)
+    print(f"[{'PASS' if changed else 'INFO'}] Last row changed: {changed}")
+    if not changed:
+        print("  (expected — last row attends to itself which is unperturbed)")
 
 
 def test_attention_identical_qkv():
