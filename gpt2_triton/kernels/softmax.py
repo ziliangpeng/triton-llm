@@ -100,10 +100,6 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     y : np.ndarray, float32
         Softmax output, same shape as ``x``.
     """
-    # --- Input validation ---
-    if axis == 0:
-        raise NotImplementedError("softmax along axis=0 is not implemented")
-
     x = np.require(x, dtype=np.float32, requirements=["C_CONTIGUOUS"])
 
     if x.size == 0:
@@ -113,6 +109,14 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     original_ndim = x.ndim
     if x.ndim == 1:
         x = x.reshape(1, -1)
+
+    # Axis validation: only axis=-1 (or axis=1 for 2D) is supported.
+    # For 1D inputs, axis=-1 and axis=0 are equivalent (same single axis),
+    # so check against the original dimensionality before reshape.
+    if original_ndim == 2 and (axis == 0 or axis == -2):
+        raise NotImplementedError(
+            f"softmax along axis={axis} on 2D input is not implemented"
+        )
 
     M, N = x.shape
 

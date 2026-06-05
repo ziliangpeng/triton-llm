@@ -177,24 +177,38 @@ def test_softmax_non_contiguous():
 
 
 def test_softmax_axis_validation():
-    """axis=0 should raise NotImplementedError."""
-    print("\n=== Softmax Axis Validation Test ===")
+    """Axis-related validation tests."""
+    print("\n=== Softmax Axis Validation Test ===\n")
 
-    x = np.random.randn(4, 128).astype(np.float32)
+    # 1D input: axis=0 is valid (the only axis)
+    x_1d = np.random.randn(256).astype(np.float32)
+    out_1d = softmax(x_1d, axis=0)
+    ref_1d = softmax(x_1d)  # default axis=-1, same as axis=0 for 1D
+    assert np.allclose(out_1d, ref_1d, atol=1e-6), "1D axis=0 should work"
+    print("[PASS] 1D input with axis=0 works")
 
-    # axis=-1 and axis=1 should work
-    out1 = softmax(x, axis=-1)
-    out2 = softmax(x, axis=1)
+    # 2D input: axis=-1 and axis=1 should produce same result
+    x_2d = np.random.randn(4, 128).astype(np.float32)
+    out1 = softmax(x_2d, axis=-1)
+    out2 = softmax(x_2d, axis=1)
     assert np.allclose(out1, out2, atol=1e-6), "axis=-1 and axis=1 should produce same result"
+    print("[PASS] axis=-1 and axis=1 produce same result")
 
-    # axis=0 should raise
+    # axis=0 should raise on 2D input
     try:
-        softmax(x, axis=0)
-        raise RuntimeError("Expected NotImplementedError for axis=0")
+        softmax(x_2d, axis=0)
+        raise RuntimeError("Expected NotImplementedError for axis=0 on 2D")
     except NotImplementedError:
-        print("[PASS] axis=0 raises NotImplementedError")
+        print("[PASS] axis=0 on 2D raises NotImplementedError")
 
-    print("[PASS] Axis validation passed")
+    # axis=-2 should raise on 2D input (equivalent to axis=0)
+    try:
+        softmax(x_2d, axis=-2)
+        raise RuntimeError("Expected NotImplementedError for axis=-2")
+    except NotImplementedError:
+        print("[PASS] axis=-2 on 2D raises NotImplementedError")
+
+    print("\n[PASS] All axis validation tests passed")
 
 
 if __name__ == "__main__":
