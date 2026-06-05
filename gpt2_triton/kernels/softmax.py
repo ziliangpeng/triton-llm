@@ -73,25 +73,22 @@ def _softmax_kernel(
         y = e / row_sum
         tl.store(y_ptr + cols, y, mask=mask)
     else:
-        # --- Tiled 3-pass path: for rows larger than BLOCK_SIZE ---
-        # Pass 1: compute row-wise maximum
+        # --- Tiled 2-pass online reduction: for rows larger than BLOCK_SIZE ---
+        # Pass 1: online softmax — compute max and exp-sum simultaneously.
+        #   When a new tile has a higher max, the running sum is rescaled by
+        #   exp(old_max - new_max) before adding the new tile's contributions.
         row_max = -float("inf")
-        for start in range(0, N, BLOCK_SIZE):
-            cols = start + offs
-            mask = cols < N
-            x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
-            block_max = tl.max(x, axis=0)
-            row_max = tl.maximum(row_max, block_max)
-
-        # Pass 2: compute sum of exp(x - row_max)
         row_sum = 0.0
         for start in range(0, N, BLOCK_SIZE):
             cols = start + offs
             mask = cols < N
             x = tl.load(x_ptr + cols, mask=mask, other=-float("inf"))
-            row_sum += tl.sum(tl.exp(x - row_max), axis=0)
+            block_max = tl.max(x, axis=0)
+            new_max = tl.maximum(row_max, block_max)
+            row_sum = row_sum * tl.exp(row_max - new_max) + tl.sum(tl.exp(x - new_max), axis=0)
+            row_max = new_max
 
-        # Pass 3: compute softmax values
+        # Pass 2: compute softmax values and store
         for start in range(0, N, BLOCK_SIZE):
             cols = start + offs
             mask = cols < N
