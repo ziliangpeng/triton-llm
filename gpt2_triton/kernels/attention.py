@@ -64,8 +64,9 @@ def _attention_kernel(
     offs_d = tl.arange(0, D_K)
     q = tl.load(Q + row_idx * stride_q + offs_d)
 
-    # Scale factor: 1 / sqrt(d_k)
-    scale = tl.math.rsqrt(tl.cast(D_K, tl.float32))
+    # Scale q at compile time — avoids a runtime rsqrt per tile
+    # (dot product linearity: s = (q * scale) @ k^T is equivalent to (q @ k^T) * scale)
+    q = q * (1.0 / D_K ** 0.5)
 
     # --- Online softmax accumulators ---
     acc = tl.zeros((D_K,), dtype=tl.float32)   # weighted sum of V rows
@@ -81,12 +82,14 @@ def _attention_kernel(
         mask_n = offs_n < N
 
         # Load K block: (BLOCK_SIZE, D_K)
+        # Only load elements within the causal boundary (offs_n <= row_idx)
+        # to avoid wasted global memory bandwidth on masked-out positions.
+        k_mask = mask_n[:, None] & (offs_n[:, None] <= row_idx)
         k_ptrs = K + offs_n[:, None] * stride_k + offs_d[None, :]
-        k = tl.load(k_ptrs, mask=mask_n[:, None], other=0.0)
+        k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
-        # Attention scores: s = q @ k^T / sqrt(d_k)
-        # q[None, :] broadcasts (D_K,) -> (1, D_K) -> (BLOCK_SIZE, D_K)
-        s = tl.sum(q[None, :] * k, axis=1) * scale
+        # Attention scores: s = q_scaled @ k^T
+        s = tl.sum(q[None, :] * k, axis=1)
 
         # Causal mask: positions after row_idx get -inf
         mask_causal = offs_n <= row_idx
@@ -102,8 +105,9 @@ def _attention_kernel(
         block_sum = tl.sum(p, axis=0)
 
         # Load V block: (BLOCK_SIZE, D_K)
+        # Same causal-boundary-gated load as K above.
         v_ptrs = V + offs_n[:, None] * stride_v + offs_d[None, :]
-        v = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0)
+        v = tl.load(v_ptrs, mask=k_mask, other=0.0)
 
         # Fused update: acc = acc * rescale + p @ V_block
         # p[:, None] * v: (BLOCK_SIZE, D_K), sum over axis=0: (D_K,)

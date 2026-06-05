@@ -96,10 +96,11 @@ def test_attention_causal_mask():
 
 
 def test_attention_identical_qkv():
-    """When Q=K=V=I (identity), attention should produce the identity.
+    """When Q=K=V=I, softmax with causal mask assigns non-uniform probabilities.
 
-    With Q=K=V=I, the scores are I @ I^T / sqrt(d_k) = I / sqrt(d_k).
-    After causal softmax, row i has non-zero only on positions <= i.
+    With Q=K=V=I, the scores are I @ I^T / sqrt(d_k). After causal softmax,
+    row i distributes probability mass across positions <= i. The output is
+    NOT the identity matrix — it's a row-weighted average of I rows.
     """
     print("\n=== Attention Identity Test ===")
 
