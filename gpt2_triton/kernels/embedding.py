@@ -58,7 +58,7 @@ def _embedding_kernel(
     BLOCK_SIZE : tl.constexpr
         Number of embedding dimensions processed per program.
     """
-    pid_x = tl.program_id(0)  # flat index over (batch * seq_len)
+    pid_x = tl.cast(tl.program_id(0), tl.int64)  # flat index over (batch * seq_len)
     pid_y = tl.program_id(1)  # block index over n_embd dimension
 
     # Cast raw int64 pointers to typed pointers (Triton 3.x compatibility)
@@ -78,7 +78,7 @@ def _embedding_kernel(
     mask = offs < n_embd
 
     # Gather token embedding: weight[token_id, offs]
-    emb_ptrs = weight + token_id * stride_weight + offs
+    emb_ptrs = weight + tl.cast(token_id, tl.int64) * stride_weight + offs
     emb = tl.load(emb_ptrs, mask=mask, other=0.0)
 
     # Gather positional encoding: pos_weight[s, offs]
