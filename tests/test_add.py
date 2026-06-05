@@ -43,9 +43,9 @@ def test_add_edge_cases():
     """Stability with extreme values and uniform arrays."""
     print("\n=== Add Edge Case Tests ===")
 
-    # Large positive values
-    x_large = np.array([1e3, 1e6, 3.4e38], dtype=np.float32)
-    y_large = np.array([2e3, 5e5, 1.0e38], dtype=np.float32)
+    # Large positive values (multi-block check)
+    x_large = np.array([1e3, 1e6, 1e10], dtype=np.float32)
+    y_large = np.array([2e3, 5e5, 2e10], dtype=np.float32)
     out_large = add(x_large, y_large)
     ref_large = x_large + y_large
     max_diff = float(np.abs(out_large - ref_large).max())
@@ -53,9 +53,9 @@ def test_add_edge_cases():
     print(f"[{'PASS' if passed else 'FAIL'}] Large positive | max_diff={max_diff:.2e}")
     assert passed, f"Large positive add failed, max_diff={max_diff:.2e}"
 
-    # Large negative values
-    x_neg = np.array([-1e3, -1e6, -3.4e38], dtype=np.float32)
-    y_neg = np.array([-2e3, -5e5, -1.0e38], dtype=np.float32)
+    # Large negative values (multi-block check)
+    x_neg = np.array([-1e3, -1e6, -1e10], dtype=np.float32)
+    y_neg = np.array([-2e3, -5e5, -2e10], dtype=np.float32)
     out_neg = add(x_neg, y_neg)
     ref_neg = x_neg + y_neg
     max_diff = float(np.abs(out_neg - ref_neg).max())

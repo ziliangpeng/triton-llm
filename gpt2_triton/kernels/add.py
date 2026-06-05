@@ -1,7 +1,6 @@
-"""
-Triton element-wise Add Kernel (C = A + B) — CUDA + HIP.
+"""Triton element-wise Add Kernel (Z = X + Y) — CUDA + HIP.
 
-Adds two float32 arrays element-wise using the GPU allocator pattern:
+Adds two numeric arrays element-wise (auto-converted to float32) using the
   to_device -> launch -> synchronize -> to_host
 """
 
@@ -19,7 +18,7 @@ def _add_kernel(
     N,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Element-wise addition C = A + B on flattened 1-D arrays.
+    """Element-wise addition Z = X + Y on flattened 1-D arrays.
 
     Each program handles ``BLOCK_SIZE`` elements. Out-of-bounds elements
     (when ``N`` is not a multiple of ``BLOCK_SIZE``) are masked out.
