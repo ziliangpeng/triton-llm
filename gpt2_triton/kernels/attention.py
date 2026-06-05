@@ -84,7 +84,10 @@ def _attention_kernel(
         # Load K block: (BLOCK_SIZE, D_K)
         # Only load elements within the causal boundary (offs_n <= row_idx)
         # to avoid wasted global memory bandwidth on masked-out positions.
-        k_mask = mask_n[:, None] & (offs_n[:, None] <= row_idx)
+        k_causal = offs_n[:, None] <= row_idx
+        # Build mask in full (BLOCK_SIZE, D_K) shape — some Triton backends
+        # require the load mask to match the pointer block shape exactly.
+        k_mask = mask_n[:, None] & k_causal & (offs_d[None, :] >= 0)
         k_ptrs = K + offs_n[:, None] * stride_k + offs_d[None, :]
         k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
@@ -92,16 +95,19 @@ def _attention_kernel(
         s = tl.sum(q[None, :] * k, axis=1)
 
         # Causal mask: positions after row_idx get -inf
-        mask_causal = offs_n <= row_idx
-        s = tl.where(mask_causal & mask_n, s, -float("inf"))
+        s = tl.where(offs_n <= row_idx, s, -float("inf"))
 
         # Online softmax: update running max and rescale
         block_max = tl.max(s, axis=0)
         new_max = tl.maximum(row_max, block_max)
+        # NaN guard: when both row_max and block_max are -inf (all-masked block),
+        # s - new_max = -inf - (-inf) = NaN. Skip rescaling in that case.
         rescale = tl.where(
             row_max == -float("inf"), 1.0, tl.exp(row_max - new_max)
         )
-        p = tl.exp(s - new_max)          # unnormalized probabilities
+        # Zero out probability mass for all-masked blocks
+        is_valid_block = block_max > -float("inf")
+        p = tl.where(is_valid_block[None], tl.exp(s - new_max), 0.0)
         block_sum = tl.sum(p, axis=0)
 
         # Load V block: (BLOCK_SIZE, D_K)
