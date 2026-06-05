@@ -76,6 +76,7 @@ def _attention_kernel(
     # --- Single tiled pass over K, V ---
     for start in range(0, N, BLOCK_SIZE):
         # Early exit: blocks past the causal boundary contribute nothing
+        # (all K/V positions would be masked out by k_causal load gate).
         if start > row_idx:
             break
         offs_n = start + tl.arange(0, BLOCK_SIZE)
@@ -182,7 +183,7 @@ def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
         q_dev.data_ptr(), k_dev.data_ptr(), v_dev.data_ptr(), o_dev.data_ptr(),
         N, d_k,
         stride_q, stride_k, stride_v, stride_o,
-        BLOCK_SIZE,
+        BLOCK_SIZE=BLOCK_SIZE,
         D_K=d_k,
     )
 
