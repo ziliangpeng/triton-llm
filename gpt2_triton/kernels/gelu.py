@@ -44,7 +44,7 @@ def _gelu_kernel(
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < N
 
-    x = tl.load(X + offsets, mask=mask)
+    x = tl.load(X + offsets, mask=mask, other=0.0)
 
     # Tanh approximation of GELU
     sqrt_2_over_pi = 0.7978845608028654
@@ -68,7 +68,7 @@ def gelu(x: np.ndarray) -> np.ndarray:
     if x.size == 0:
         return np.empty_like(x, dtype=np.float32)
 
-    x_dev = gpu.to_device(np.ascontiguousarray(x, dtype=np.float32))
+    x_dev = gpu.to_device(np.require(x, dtype=np.float32, requirements=['C_CONTIGUOUS']))
     y_dev = gpu.allocate(x.shape, np.float32)
     N = x.size
     BLOCK_SIZE = 1024

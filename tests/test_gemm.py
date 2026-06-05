@@ -80,52 +80,37 @@ def test_gemm_edge_cases():
     print("\n=== GEMM Edge Cases ===")
 
     # K=0 should return a zero matrix (gemm handles it explicitly now)
-    try:
-        a = np.random.randn(10, 0).astype(np.float32)
-        b = np.random.randn(0, 10).astype(np.float32)
-        out = gemm(a, b)
-        assert out.shape == (10, 10), f"Expected shape (10, 10), got {out.shape}"
-        assert np.all(out == 0.0), "K=0 result should be all zeros"
-        print("[PASS] K=0 case handled (returned zero matrix)")
-    except Exception as e:
-        print(f"[FAIL] K=0 case raised {type(e).__name__}: {e}")
-        return False
+    a = np.random.randn(10, 0).astype(np.float32)
+    b = np.random.randn(0, 10).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (10, 10), f"Expected shape (10, 10), got {out.shape}"
+    assert np.all(out == 0.0), "K=0 result should be all zeros"
+    print("[PASS] K=0 case handled (returned zero matrix)")
 
     # M=0 should return a zero matrix
-    try:
-        a = np.random.randn(0, 20).astype(np.float32)
-        b = np.random.randn(20, 10).astype(np.float32)
-        out = gemm(a, b)
-        assert out.shape == (0, 10), f"Expected shape (0, 10), got {out.shape}"
-        assert out.size == 0, "M=0 result should be empty"
-        print("[PASS] M=0 case handled (returned zero matrix)")
-    except Exception as e:
-        print(f"[FAIL] M=0 case raised {type(e).__name__}: {e}")
-        return False
+    a = np.random.randn(0, 20).astype(np.float32)
+    b = np.random.randn(20, 10).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (0, 10), f"Expected shape (0, 10), got {out.shape}"
+    assert out.size == 0, "M=0 result should be empty"
+    print("[PASS] M=0 case handled (returned zero matrix)")
 
     # N=0 should return a zero matrix
-    try:
-        a = np.random.randn(10, 20).astype(np.float32)
-        b = np.random.randn(20, 0).astype(np.float32)
-        out = gemm(a, b)
-        assert out.shape == (10, 0), f"Expected shape (10, 0), got {out.shape}"
-        assert out.size == 0, "N=0 result should be empty"
-        print("[PASS] N=0 case handled (returned zero matrix)")
-    except Exception as e:
-        print(f"[FAIL] N=0 case raised {type(e).__name__}: {e}")
-        return False
+    a = np.random.randn(10, 20).astype(np.float32)
+    b = np.random.randn(20, 0).astype(np.float32)
+    out = gemm(a, b)
+    assert out.shape == (10, 0), f"Expected shape (10, 0), got {out.shape}"
+    assert out.size == 0, "N=0 result should be empty"
+    print("[PASS] N=0 case handled (returned zero matrix)")
 
     # Mismatched K should raise AssertionError
+    a = np.random.randn(10, 20).astype(np.float32)
+    b = np.random.randn(30, 10).astype(np.float32)
     try:
-        a = np.random.randn(10, 20).astype(np.float32)
-        b = np.random.randn(30, 10).astype(np.float32)
         _ = gemm(a, b)
         assert False, "Should have raised AssertionError"
     except AssertionError:
         print("[PASS] Mismatched K correctly rejected")
-    except Exception as e:
-        print(f"[FAIL] Mismatched K raised wrong exception: {type(e).__name__}: {e}")
-        return False
 
     return True
 
