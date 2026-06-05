@@ -110,7 +110,7 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
         return np.empty(x.shape, dtype=np.float32)
 
     # Handle 1D input by reshaping to (1, N)
-    original_shape = x.shape
+    original_ndim = x.ndim
     if x.ndim == 1:
         x = x.reshape(1, -1)
 
@@ -140,7 +140,7 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     y = gpu.to_host(y_dev)
 
     # Flatten back if input was 1D
-    if x.ndim != original_shape:
+    if original_ndim == 1:
         y = y.ravel()
 
     return y
