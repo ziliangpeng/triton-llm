@@ -110,12 +110,13 @@ def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     if x.ndim == 1:
         x = x.reshape(1, -1)
 
-    # Axis validation: only axis=-1 (or axis=1 for 2D) is supported.
-    # For 1D inputs, axis=-1 and axis=0 are equivalent (same single axis),
-    # so check against the original dimensionality before reshape.
-    if original_ndim == 2 and (axis == 0 or axis == -2):
+    # Axis validation: only the last dimension is supported.
+    # Compute the positive axis index and verify it's the last dimension.
+    pos_axis = axis if axis >= 0 else original_ndim + axis
+    if pos_axis != original_ndim - 1:
         raise NotImplementedError(
-            f"softmax along axis={axis} on 2D input is not implemented"
+            f"softmax along axis={axis} on {original_ndim}D input is not implemented "
+            f"(only the last dimension, axis={original_ndim - 1}, is supported)"
         )
 
     M, N = x.shape

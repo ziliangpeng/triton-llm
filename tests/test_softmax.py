@@ -204,6 +204,21 @@ def test_softmax_axis_validation():
     except NotImplementedError:
         print("[PASS] axis=-2 on 2D raises NotImplementedError")
 
+    # axis=2 should raise on 2D (out of bounds for last-dim-only)
+    try:
+        softmax(x_2d, axis=2)
+        raise RuntimeError("Expected NotImplementedError for axis=2 on 2D")
+    except NotImplementedError:
+        print("[PASS] axis=2 on 2D raises NotImplementedError")
+
+    # axis=1 should raise on 1D (1D has only axis=0 / axis=-1)
+    x_1d_2 = np.random.randn(256).astype(np.float32)
+    try:
+        softmax(x_1d_2, axis=1)
+        raise RuntimeError("Expected NotImplementedError for axis=1 on 1D")
+    except NotImplementedError:
+        print("[PASS] axis=1 on 1D raises NotImplementedError")
+
     print("\n[PASS] All axis validation tests passed")
 
 
