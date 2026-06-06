@@ -163,7 +163,13 @@ def test_attention_non_causal():
     v = np.random.randn(seq_k, d_k).astype(np.float32)
 
     out = attention(q, k, v, causal=False)
-    ref = _attention_ref(q, k, v)
+
+    # Non-causal reference: no mask, direct softmax
+    score = q @ k.T / (d_k ** 0.5)  # (1, 8)
+    score_max = score.max(axis=-1, keepdims=True)
+    attn = np.exp(score - score_max)
+    attn = attn / attn.sum(axis=-1, keepdims=True)
+    ref = attn @ v  # (1, 64)
 
     assert out.shape == (seq_q, d_k), f"Expected ({seq_q}, {d_k}), got {out.shape}"
     assert not np.any(np.isnan(out)), "Output contains NaN"
