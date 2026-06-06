@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick benchmark: GPT-2 Small, full vs KV cache."""
+"""Quick benchmark: small test config, full vs KV cache."""
 import time, numpy as np, sys
 sys.path.insert(0, '.')
 from gpt2_triton.config import GPT2Config
@@ -36,42 +36,37 @@ def generate_full(model, token_ids, max_new_tokens):
 
 np.random.seed(42)
 
-config = GPT2Config(n_layer=12, n_head=12, n_embd=768, vocab_size=50257, n_positions=1024)
+config = GPT2Config(n_layer=2, n_head=4, n_embd=64, vocab_size=100, n_positions=1024)
 
 print("=" * 80)
-print("GPT-2 Small: Full Recompute vs KV Cache")
+print("GPT-2 (2L/64E, random weights): Full Recompute vs KV Cache (H100)")
 print("=" * 80)
 print(f"\n{'prompt':<8} {'gen':<6} {'full(s)':<12} {'cache(s)':<12} {'speedup':<10} {'quality':<10}")
 print("-" * 80)
 
-prompt = np.random.randint(0, config.vocab_size, (1, 8)).astype(np.int32)
+for plen in [4, 16, 64]:
+    prompt = np.random.randint(0, config.vocab_size, (1, plen)).astype(np.int32)
 
-for glen in [1, 10, 30, 50]:
-    weights = _weights(config)
+    for glen in [1, 10, 30, 50]:
+        weights = _weights(config)
 
-    # Full
-    m = GPT2Model(config, weights)
-    t0 = time.time()
-    logits = m._forward_full(prompt)
-    tokens = prompt.copy()
-    for _ in range(glen):
-        logits = m._forward_full(tokens)
-        nt = int(np.argmax(logits[0, -1, :]))
-        tokens = np.concatenate([tokens, np.array([[nt]], dtype=np.int32)], axis=1)
-    t_full = time.time() - t0
-    out_full = tokens
-    del m
+        # Full recompute
+        m = GPT2Model(config, weights)
+        t0 = time.time()
+        out_full = generate_full(m, prompt.copy(), glen)
+        t_full = time.time() - t0
+        del m
 
-    # Cache
-    m = GPT2Model(config, weights)
-    t0 = time.time()
-    out_cache = m.generate(prompt.copy(), max_new_tokens=glen, temperature=0.0)
-    t_cache = time.time() - t0
-    del m
+        # KV cache
+        m = GPT2Model(config, weights)
+        t0 = time.time()
+        out_cache = m.generate(prompt.copy(), max_new_tokens=glen, temperature=0.0)
+        t_cache = time.time() - t0
+        del m
 
-    qual = "PASS" if np.array_equal(out_full, out_cache) else "FAIL"
-    spd = t_full / t_cache if t_cache > 0 else float('inf')
-    print(f"8        {glen:<6} {t_full:<12.4f} {t_cache:<12.4f} {spd:<10.2f}x {qual:<10}")
+        qual = "PASS" if np.array_equal(out_full, out_cache) else "FAIL"
+        spd = t_full / t_cache if t_cache > 0 else float('inf')
+        print(f"{plen:<8} {glen:<6} {t_full:<12.6f} {t_cache:<12.6f} {spd:<10.2f}x {qual:<10}")
 
 print("-" * 80)
-print("H100 | GPT-2 Small (12-layer, 768-wide) | random weights")
+print("H100 | Triton 3.4.0 | CUDA 13.0 | batch=1 | float32")
