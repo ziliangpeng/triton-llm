@@ -312,6 +312,9 @@ class GPT2Model:
                 # Fused attention -- with or without causal masking
                 # Prefill: K/V seq equals Q seq => causal=True
                 # Decode: K/V seq > Q seq => causal=False
+                # NOTE: This check relies on the np.concatenate above
+                # having already appended k_h/k_v. If the append is ever
+                # moved after the attention call, this logic breaks.
                 is_prefill = (cache["k"][head].shape[0] == seq)
                 o_h = attention(q_h, cache["k"][head], cache["v"][head],
                                 causal=is_prefill)

@@ -150,6 +150,31 @@ def test_attention_single_token():
     assert passed, f"Single token test failed, max_diff={max_diff:.2e}"
 
 
+def test_attention_non_causal():
+    """Non-causal attention allows different Q and K/V sequence lengths."""
+    print("\n=== Attention Non-Causal Test ===")
+
+    np.random.seed(42)
+    d_k = 64
+    seq_q, seq_k = 1, 8  # single query, 8 cached K/V positions
+
+    q = np.random.randn(seq_q, d_k).astype(np.float32)
+    k = np.random.randn(seq_k, d_k).astype(np.float32)
+    v = np.random.randn(seq_k, d_k).astype(np.float32)
+
+    out = attention(q, k, v, causal=False)
+    ref = _attention_ref(q, k, v)
+
+    assert out.shape == (seq_q, d_k), f"Expected ({seq_q}, {d_k}), got {out.shape}"
+    assert not np.any(np.isnan(out)), "Output contains NaN"
+
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
+    status = "PASS" if passed else "FAIL"
+    print(f"[{status}] Q=(1,{d_k}) K/V=({seq_k},{d_k}) | max_diff={max_diff:.2e}")
+    assert passed, f"Non-causal attention failed, max_diff={max_diff:.2e}"
+
+
 if __name__ == "__main__":
     test_attention_correctness()
     test_attention_causal_mask()

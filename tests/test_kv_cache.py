@@ -1,5 +1,4 @@
-"""
-Tests for KV-cached autoregressive decode.
+"""Tests for KV-cached autoregressive decode.
 
 Verifies that the KV cache produces identical output to full recompute,
 and exercises edge cases.
@@ -41,29 +40,36 @@ def _make_random_weights(config):
 
 
 def test_greedy_equivalence():
-    """KV-cached generate produces identical output to full-recompute generate
-    for any prompt when temperature=0 (greedy)."""
+    """KV-cached generate matches full-recompute generate for any prompt
+    when temperature=0 (greedy)."""
     print("\n=== test_greedy_equivalence ===")
     config = GPT2Config(n_layer=2, n_head=4, n_embd=64, vocab_size=100, n_positions=1024)
     np.random.seed(42)
     weights = _make_random_weights(config)
 
     # Generate with KV cache
-    model_cache = GPT2Model(config, weights)
+    model = GPT2Model(config, weights)
     prompt = np.array([[5, 12, 7, 0, 3]], dtype=np.int32)
-    out_cache = model_cache.generate(prompt.copy(), max_new_tokens=10, temperature=0.0)
+    out_cache = model.generate(prompt.copy(), max_new_tokens=10, temperature=0.0)
 
-    # Generate with full recompute (no cache)
+    # Generate with full recompute (use_cache=False via _forward_full)
     model_full = GPT2Model(config, weights)
-    out_full = model_full.generate(prompt.copy(), max_new_tokens=10, temperature=0.0)
+    tokens = prompt.copy()
+    for _ in range(10):
+        logits = model_full._forward_full(tokens)  # no cache
+        next_token = int(np.argmax(logits[0, -1, :]))
+        tokens = np.concatenate(
+            [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+        )
+    out_full = tokens
 
     np.testing.assert_array_equal(
         out_cache, out_full,
         err_msg="KV-cached and full-recompute greedy outputs should match",
     )
     print(f"  Prompt: {prompt.tolist()}")
-    print(f"  Output: {out_cache.tolist()}")
-    print(f"  Output (full): {out_full.tolist()}  [PASS]")
+    print(f"  Output (cached): {out_cache.tolist()}")
+    print(f"  Output (full):   {out_full.tolist()}  [PASS]")
     return True
 
 
