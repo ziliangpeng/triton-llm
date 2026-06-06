@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Benchmark: GPT-2 Small, full recompute vs KV cache on H100."""
+"""Benchmark all 4 GPT-2 variants: full recompute vs KV cache on H100.
+Uses TRITON_CACHE_DIR to avoid repeated compilation."""
 import time, numpy as np, sys
 sys.path.insert(0, '.')
 from gpt2_triton.config import GPT2Config
@@ -27,7 +28,6 @@ def _weights(c):
     return w
 
 def gen_full(model, tokens, n):
-    """Full recompute generation (greedy)."""
     t = tokens.copy()
     for _ in range(n):
         logits = model._forward_full(t)
@@ -35,47 +35,50 @@ def gen_full(model, tokens, n):
         t = np.concatenate([t, np.array([[nt]], dtype=np.int32)], axis=1)
     return t
 
-np.random.seed(42)
-config = GPT2Config(n_layer=12, n_head=12, n_embd=768, vocab_size=50257, n_positions=1024)
+configs = [
+    ("Small",  GPT2Config(n_layer=12, n_head=12, n_embd=768,  vocab_size=50257, n_positions=1024)),
+    ("Medium", GPT2Config(n_layer=24, n_head=16, n_embd=1024, vocab_size=50257, n_positions=1024)),
+    ("Large",  GPT2Config(n_layer=36, n_head=20, n_embd=1280, vocab_size=50257, n_positions=1024)),
+    ("XL",     GPT2Config(n_layer=48, n_head=25, n_embd=1600, vocab_size=50257, n_positions=1024)),
+]
 
-# Warmup / Triton compile
-print("Warmup (compiling Triton kernels)...", flush=True)
-w = _weights(config)
-m = GPT2Model(config, w)
-_ = m.generate(np.array([[5, 12]], dtype=np.int32), max_new_tokens=1, temperature=0.0)
-_ = gen_full(m, np.array([[5, 12]], dtype=np.int32), 1)
-del m
+# Warmup first (Small)
+print("Warmup Small...", flush=True)
+w = _weights(configs[0][1])
+m = GPT2Model(configs[0][1], w)
+_ = m.generate(np.array([[5,12]], dtype=np.int32), max_new_tokens=1, temperature=0.0)
+del m, w
 print("Warmup done.\n")
 
-print("=" * 90)
-print("GPT-2 Small (12×768): Full Recompute vs KV Cache (H100)")
-print("=" * 90)
-print(f"{'prompt':<8} {'gen':<6} {'full(s)':<12} {'cache(s)':<12} {'speedup':<10} {'quality':<10}")
-print("-" * 90)
-
-for plen in [8, 32]:
-    prompt = np.random.randint(0, config.vocab_size, (1, plen)).astype(np.int32)
-    for glen in [10, 30, 50]:
+for name, config in configs:
+    print(f"\n{'='*70}")
+    print(f"GPT-2 {name} ({config.n_layer}L×{config.n_embd}E)")
+    print(f"{'='*70}")
+    
+    np.random.seed(42)
+    prompt = np.random.randint(0, config.vocab_size, (1, 8)).astype(np.int32)
+    gen_lens = [10, 30, 50]
+    
+    print(f"{'gen':<6} {'full(s)':<12} {'cache(s)':<12} {'speedup':<10} {'quality':<10}")
+    print("-" * 50)
+    
+    for glen in gen_lens:
         w = _weights(config)
-
-        # Full recompute
+        
         m = GPT2Model(config, w)
         t0 = time.time()
         out_full = gen_full(m, prompt.copy(), glen)
         t_full = time.time() - t0
         del m
-
-        # KV cache
+        
         m = GPT2Model(config, w)
         t0 = time.time()
         out_cache = m.generate(prompt.copy(), max_new_tokens=glen, temperature=0.0)
         t_cache = time.time() - t0
         del m
-
+        
         qual = "PASS" if np.array_equal(out_full, out_cache) else "FAIL"
         spd = t_full / t_cache if t_cache > 0 else float('inf')
-        print(f"{plen:<8} {glen:<6} {t_full:<12.4f} {t_cache:<12.4f} {spd:<10.2f}x {qual:<10}")
+        print(f"{glen:<6} {t_full:<12.4f} {t_cache:<12.4f} {spd:<10.2f}x {qual:<10}")
 
-print("-" * 90)
-print("H100 | Triton 3.4.0 | CUDA 13.0 | batch=1 | float32 | random weights")
-print("Quality = cached greedy output matches full-recompute greedy output")
+print("\nH100 | Triton 3.4.0 | CUDA 13.0 | batch=1 | float32 | random weights | prompt=8")
