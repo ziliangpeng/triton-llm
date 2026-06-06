@@ -72,11 +72,9 @@ def _attention_kernel(
     row_sum = 0.0                               # running sum of exp(x - max)
 
     # --- Single tiled pass over K, V ---
+    # Note: Triton does not support ``break`` in jitted functions, so we iterate
+    # over all blocks and rely on causal masking instead.
     for start in range(0, N, BLOCK_SIZE):
-        # Early exit: blocks past the causal boundary contribute nothing
-        # (all K/V positions would be masked out by k_causal load gate).
-        if start > row_idx:
-            break
         offs_n = start + tl.arange(0, BLOCK_SIZE)
         mask_n = offs_n < N
 

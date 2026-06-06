@@ -215,8 +215,8 @@ class GPT2Model:
         d_k = n_embd // n_head
 
         # QKV projection: (seq, n_embd) -> (seq, 3*n_embd)
-        qkv = add(gemm(h, self.c_attn_w[layer_idx]),
-                  self.c_attn_b[layer_idx])
+        qkv = gemm(h, self.c_attn_w[layer_idx])  # (seq, 3*n_embd)
+        qkv = add(qkv, np.broadcast_to(self.c_attn_b[layer_idx], qkv.shape))
 
         # Split into Q, K, V (each (seq, n_embd))
         q_all = qkv[:, :n_embd]
@@ -237,8 +237,8 @@ class GPT2Model:
             attn_out[:, s:e] = o_h
 
         # Output projection: (seq, n_embd) -> (seq, n_embd)
-        return add(gemm(attn_out, self.c_proj_w[layer_idx]),
-                   self.c_proj_b[layer_idx])
+        out = gemm(attn_out, self.c_proj_w[layer_idx])  # (seq, n_embd)
+        return add(out, np.broadcast_to(self.c_proj_b[layer_idx], out.shape))
 
     # ------------------------------------------------------------------
     # MLP sub-block
@@ -247,12 +247,12 @@ class GPT2Model:
     def _apply_mlp(self, h: np.ndarray, layer_idx: int) -> np.ndarray:
         """FC up -> GELU -> FC down."""
         # (seq, n_embd) -> (seq, 4*n_embd)
-        h = add(gemm(h, self.c_fc_w[layer_idx]),
-                self.c_fc_b[layer_idx])
+        h = gemm(h, self.c_fc_w[layer_idx])  # (seq, 4*n_embd)
+        h = add(h, np.broadcast_to(self.c_fc_b[layer_idx], h.shape))
         h = gelu(h)  # (seq, 4*n_embd)
         # (seq, 4*n_embd) -> (seq, n_embd)
-        return add(gemm(h, self.c_proj_mlp_w[layer_idx]),
-                   self.c_proj_mlp_b[layer_idx])
+        out = gemm(h, self.c_proj_mlp_w[layer_idx])  # (seq, n_embd)
+        return add(out, np.broadcast_to(self.c_proj_mlp_b[layer_idx], out.shape))
 
     # ------------------------------------------------------------------
     # Generation
