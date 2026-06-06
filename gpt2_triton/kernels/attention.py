@@ -108,6 +108,10 @@ def _attention_kernel(
             # Attention scores: s = q_scaled @ k^T (no causal mask)
             s = tl.sum(q[None, :] * k, axis=1)
 
+            # Mask padded positions (beyond N) — they were loaded as 0.0
+            # and would contaminate the softmax denominator with exp(0) = 1.
+            s = tl.where(mask_n, s, -float("inf"))
+
         # Online softmax: update running max and rescale
         block_max = tl.max(s, axis=0)
         new_max = tl.maximum(row_max, block_max)
