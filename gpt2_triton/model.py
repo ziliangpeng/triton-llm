@@ -70,10 +70,11 @@ class GPT2Model:
 
         for i in range(n_layer):
             # --- Attention block ---
-            # c_attn: HF (3*n_embd, n_embd) -> store .T as (n_embd, 3*n_embd)
+            # GPT-2 uses Conv1D layers: weights are stored as (in_features, out_features).
+            # No transpose needed — gemm(hidden, weight) expects (seq, n_embd) @ (n_embd, out).
             w = weights[f"h.{i}.attn.c_attn.weight"]
             self.c_attn_w.append(
-                np.require(w.T, dtype=np.float32, requirements=["C_CONTIGUOUS"])
+                np.require(w, dtype=np.float32, requirements=["C_CONTIGUOUS"])
             )
             self.c_attn_b.append(
                 np.require(
@@ -83,10 +84,10 @@ class GPT2Model:
                 )
             )
 
-            # c_proj: HF (n_embd, n_embd) -> store .T as (n_embd, n_embd)
+            # c_proj: HF (n_embd, n_embd) — already (in, out), no transpose
             w = weights[f"h.{i}.attn.c_proj.weight"]
             self.c_proj_w.append(
-                np.require(w.T, dtype=np.float32, requirements=["C_CONTIGUOUS"])
+                np.require(w, dtype=np.float32, requirements=["C_CONTIGUOUS"])
             )
             self.c_proj_b.append(
                 np.require(
@@ -97,10 +98,10 @@ class GPT2Model:
             )
 
             # --- MLP block ---
-            # c_fc: HF (4*n_embd, n_embd) -> store .T as (n_embd, 4*n_embd)
+            # c_fc: HF (n_embd, 4*n_embd) — already (in, out), no transpose
             w = weights[f"h.{i}.mlp.c_fc.weight"]
             self.c_fc_w.append(
-                np.require(w.T, dtype=np.float32, requirements=["C_CONTIGUOUS"])
+                np.require(w, dtype=np.float32, requirements=["C_CONTIGUOUS"])
             )
             self.c_fc_b.append(
                 np.require(
@@ -110,10 +111,10 @@ class GPT2Model:
                 )
             )
 
-            # c_proj (MLP output): HF (n_embd, 4*n_embd) -> store .T as (4*n_embd, n_embd)
+            # c_proj (MLP output): HF (4*n_embd, n_embd) — already (in, out), no transpose
             w = weights[f"h.{i}.mlp.c_proj.weight"]
             self.c_proj_mlp_w.append(
-                np.require(w.T, dtype=np.float32, requirements=["C_CONTIGUOUS"])
+                np.require(w, dtype=np.float32, requirements=["C_CONTIGUOUS"])
             )
             self.c_proj_mlp_b.append(
                 np.require(
