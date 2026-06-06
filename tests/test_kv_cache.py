@@ -22,14 +22,16 @@ def _make_random_weights(config):
         "ln_f.bias": np.random.randn(n).astype(np.float32),
     }
     for i in range(n_layer):
+        # GPT-2 uses Conv1D: weights stored as (in_features, out_features).
+        # No transpose needed — gemm(hidden, w) uses w directly.
         weights.update({
-            f"h.{i}.attn.c_attn.weight": np.random.randn(3 * n, n).astype(np.float32),
+            f"h.{i}.attn.c_attn.weight": np.random.randn(n, 3 * n).astype(np.float32),
             f"h.{i}.attn.c_attn.bias": np.random.randn(3 * n).astype(np.float32),
             f"h.{i}.attn.c_proj.weight": np.random.randn(n, n).astype(np.float32),
             f"h.{i}.attn.c_proj.bias": np.random.randn(n).astype(np.float32),
-            f"h.{i}.mlp.c_fc.weight": np.random.randn(4 * n, n).astype(np.float32),
+            f"h.{i}.mlp.c_fc.weight": np.random.randn(n, 4 * n).astype(np.float32),
             f"h.{i}.mlp.c_fc.bias": np.random.randn(4 * n).astype(np.float32),
-            f"h.{i}.mlp.c_proj.weight": np.random.randn(n, 4 * n).astype(np.float32),
+            f"h.{i}.mlp.c_proj.weight": np.random.randn(4 * n, n).astype(np.float32),
             f"h.{i}.mlp.c_proj.bias": np.random.randn(n).astype(np.float32),
             f"h.{i}.ln_1.weight": np.random.randn(n).astype(np.float32),
             f"h.{i}.ln_1.bias": np.random.randn(n).astype(np.float32),
