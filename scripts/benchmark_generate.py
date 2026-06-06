@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick benchmark: GPT-2 Small, full recompute vs KV cache."""
+"""Quick benchmark: GPT-2 Small, full vs KV cache."""
 import time, numpy as np, sys
 sys.path.insert(0, '.')
 from gpt2_triton.config import GPT2Config
@@ -36,37 +36,42 @@ def generate_full(model, token_ids, max_new_tokens):
 
 np.random.seed(42)
 
-configs = [
-    ("GPT-2 Small",  GPT2Config(n_layer=12, n_head=12, n_embd=768,  vocab_size=50257, n_positions=1024)),
-    ("GPT-2 Medium", GPT2Config(n_layer=24, n_head=16, n_embd=1024, vocab_size=50257, n_positions=1024)),
-    ("GPT-2 Large",  GPT2Config(n_layer=36, n_head=20, n_embd=1280, vocab_size=50257, n_positions=1024)),
-    ("GPT-2 XL",     GPT2Config(n_layer=48, n_head=25, n_embd=1600, vocab_size=50257, n_positions=1024)),
-]
+config = GPT2Config(n_layer=12, n_head=12, n_embd=768, vocab_size=50257, n_positions=1024)
 
-print("=" * 100)
-print("GPT-2 Generation Benchmark: Full Recompute vs KV Cache")
-print("=" * 100)
+print("=" * 80)
+print("GPT-2 Small: Full Recompute vs KV Cache")
+print("=" * 80)
+print(f"\n{'prompt':<8} {'gen':<6} {'full(s)':<12} {'cache(s)':<12} {'speedup':<10} {'quality':<10}")
+print("-" * 80)
 
-for name, config in configs:
-    print(f"\n--- {name} (n_layer={config.n_layer}, n_embd={config.n_embd}) ---")
-    prompt = np.random.randint(0, config.vocab_size, (1, 8)).astype(np.int32)
+prompt = np.random.randint(0, config.vocab_size, (1, 8)).astype(np.int32)
+
+for glen in [1, 10, 30, 50]:
     weights = _weights(config)
 
-    for glen in [1, 10, 30]:
-        # Full
-        m = GPT2Model(config, weights)
-        t0 = time.time()
-        out_full = generate_full(m, prompt.copy(), glen)
-        t_full = time.time() - t0
-        del m
+    # Full
+    m = GPT2Model(config, weights)
+    t0 = time.time()
+    logits = m._forward_full(prompt)
+    tokens = prompt.copy()
+    for _ in range(glen):
+        logits = m._forward_full(tokens)
+        nt = int(np.argmax(logits[0, -1, :]))
+        tokens = np.concatenate([tokens, np.array([[nt]], dtype=np.int32)], axis=1)
+    t_full = time.time() - t0
+    out_full = tokens
+    del m
 
-        # Cache
-        m = GPT2Model(config, weights)
-        t0 = time.time()
-        out_cache = m.generate(prompt.copy(), max_new_tokens=glen, temperature=0.0)
-        t_cache = time.time() - t0
-        del m
+    # Cache
+    m = GPT2Model(config, weights)
+    t0 = time.time()
+    out_cache = m.generate(prompt.copy(), max_new_tokens=glen, temperature=0.0)
+    t_cache = time.time() - t0
+    del m
 
-        qual = "PASS" if np.array_equal(out_full, out_cache) else "FAIL"
-        spd = t_full / t_cache if t_cache > 0 else float('inf')
-        print(f"  prompt=8  gen={glen:<3}  full={t_full:<8.4f}s  cache={t_cache:<8.4f}s  {spd:<5.1f}x  quality={qual}")
+    qual = "PASS" if np.array_equal(out_full, out_cache) else "FAIL"
+    spd = t_full / t_cache if t_cache > 0 else float('inf')
+    print(f"8        {glen:<6} {t_full:<12.4f} {t_cache:<12.4f} {spd:<10.2f}x {qual:<10}")
+
+print("-" * 80)
+print("H100 | GPT-2 Small (12-layer, 768-wide) | random weights")
