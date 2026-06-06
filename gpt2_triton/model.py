@@ -277,8 +277,15 @@ class GPT2Model:
         n_head = config.n_head
         d_k = n_embd // n_head
 
-        # Embedding
-        hidden = embedding(token_ids, self.wte, self.wpe)  # (1, seq, n_embd)
+        # Compute position offset: total tokens processed before this call
+        # (including all prior prompt + generated tokens).
+        # Use the first head's first-layer cache length as the running count.
+        prev_seq = self.kv_cache[0]["k"][0].shape[0]
+        pos_offset = prev_seq
+
+        # Embedding with position offset for correct positional encoding
+        hidden = embedding(token_ids, self.wte, self.wpe,
+                           position_offset=pos_offset)  # (1, seq, n_embd)
         seq = hidden.shape[1]
         hidden = hidden.reshape(-1, n_embd)  # (seq, n_embd)
 

@@ -20,6 +20,7 @@ def _embedding_kernel(
     vocab_size,        # int — reserved for future bounds checking
     n_embd,            # int — embedding dimension
     seq_len,           # int — sequence length (used to compute position index)
+    position_offset,   # int — absolute position offset for KV cache decode
     stride_weight,     # int — weight row stride in elements
     stride_pos,        # int — pos_weight row stride in elements
     BLOCK_SIZE: tl.constexpr,  # tile over n_embd
@@ -32,7 +33,7 @@ def _embedding_kernel(
 
         1. Loads ``token_id = token_ids[b, s]``
         2. Gathers ``weight[token_id, col_start:col_start+BLOCK_SIZE]``
-        3. Gathers ``pos_weight[s, col_start:col_start+BLOCK_SIZE]``
+        3. Gathers ``pos_weight[position_offset + s, col_start:col_start+BLOCK_SIZE]``
         4. Stores ``output[b, s, col_start:] = emb_chunk + pos_chunk``
 
     Parameters
@@ -51,6 +52,9 @@ def _embedding_kernel(
         Embedding dimension.
     seq_len : int
         Sequence length (used to derive ``s = pid_x % seq_len``).
+    position_offset : int
+        Absolute position offset added to derive the index into pos_weight.
+        For KV cache decode, this is the current sequence position so far.
     stride_weight : int
         Row stride of ``weight`` in elements (not bytes).
     stride_pos : int
@@ -69,6 +73,7 @@ def _embedding_kernel(
 
     # Position within the sequence (column index)
     s = pid_x % seq_len
+    abs_pos = s + position_offset
 
     # Load the token ID for this position
     token_id = tl.load(token_ids + pid_x)
@@ -81,8 +86,8 @@ def _embedding_kernel(
     emb_ptrs = weight + tl.cast(token_id, tl.int64) * stride_weight + offs
     emb = tl.load(emb_ptrs, mask=mask, other=0.0)
 
-    # Gather positional encoding: pos_weight[s, offs]
-    pos_ptrs = pos_weight + s * stride_pos + offs
+    # Gather positional encoding: pos_weight[abs_pos, offs]
+    pos_ptrs = pos_weight + abs_pos * stride_pos + offs
     pos = tl.load(pos_ptrs, mask=mask, other=0.0)
 
     # Combine and store
@@ -94,12 +99,13 @@ def embedding(
     token_ids: np.ndarray,      # (batch, seq_len), int32
     weight: np.ndarray,          # (vocab_size, n_embd), float32
     pos_weight: np.ndarray,      # (max_position, n_embd), float32
+    position_offset: int = 0,    # absolute position offset for KV cache decode
 ) -> np.ndarray:                 # (batch, seq_len, n_embd), float32
     """Fused token embedding + positional encoding.
 
     For every position ``(b, s)`` in the batch::
 
-        output[b, s, :] = weight[token_ids[b, s], :] + pos_weight[s, :]
+        output[b, s, :] = weight[token_ids[b, s], :] + pos_weight[s + position_offset, :]
 
     Parameters
     ----------
@@ -109,6 +115,10 @@ def embedding(
         2-D float32 token embedding weight, shape ``(vocab_size, n_embd)``.
     pos_weight : np.ndarray
         2-D float32 positional encoding weight, shape ``(max_position, n_embd)``.
+    position_offset : int
+        Absolute position offset added to each token's index into pos_weight.
+        Default 0 for full-sequence embedding. For KV cache decode steps,
+        set to the current total sequence length so far.
 
     Returns
     -------
@@ -164,6 +174,7 @@ def embedding(
         vocab_size,
         n_embd,
         seq_len,
+        position_offset,
         stride_weight,
         stride_pos,
         BLOCK_SIZE=BLOCK_SIZE,
