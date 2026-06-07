@@ -277,10 +277,10 @@ def test_gqa_empty():
     v_empty = np.empty((0, d_k), dtype=np.float32)
     out2 = attention_gqa(q_some, k_empty, v_empty, n_head, n_kv_head, causal=False)
     expected_shape2 = (n_head * 4, d_k)
-    shape_ok2 = out2.shape == expected_shape2
+    shape_ok2 = out2.shape == expected_shape2 and np.all(out2 == 0.0)
     status2 = "PASS" if shape_ok2 else "FAIL"
     print(f"  [{status2}] seq_k=0: shape {out2.shape} == {expected_shape2}: {shape_ok2}")
-    assert shape_ok2, f"seq_k=0: expected {expected_shape2}, got {out2.shape}"
+    assert shape_ok2, f"seq_k=0: expected {expected_shape2} and all zeros, got shape {out2.shape}"
 
     # Both zero
     out3 = attention_gqa(q_empty, k_empty, v_empty, n_head, n_kv_head, causal=False)

@@ -100,30 +100,17 @@ def _gqa_attention_kernel(
         mask_n = offs_n < seq_k
 
         if CAUSAL:
-            # Load K block with causal gating (only positions <= q_pos)
-            k_causal = offs_n <= q_pos
-            k_mask_1d = mask_n & k_causal
-            k_mask = tl.broadcast_to(k_mask_1d[:, None], (BLOCK_SIZE, HEAD_SIZE))
-            k_ptrs = K + k_head_offset + offs_n[:, None] * stride_k + offs_d[None, :]
-            k = tl.load(k_ptrs, mask=k_mask, other=0.0)
-
-            # Attention scores: s = q_scaled @ k^T
-            s = tl.sum(q[None, :] * k, axis=1)
-
-            # Causal mask: positions after q_pos get -inf
-            s = tl.where(k_mask_1d, s, -float("inf"))
+            k_mask_1d = mask_n & (offs_n <= q_pos)
         else:
-            # Load ALL K/V positions -- no causal gating
             k_mask_1d = mask_n
-            k_mask = tl.broadcast_to(k_mask_1d[:, None], (BLOCK_SIZE, HEAD_SIZE))
-            k_ptrs = K + k_head_offset + offs_n[:, None] * stride_k + offs_d[None, :]
-            k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
-            # Attention scores: s = q_scaled @ k^T (no causal mask)
-            s = tl.sum(q[None, :] * k, axis=1)
+        k_mask = tl.broadcast_to(k_mask_1d[:, None], (BLOCK_SIZE, HEAD_SIZE))
+        k_ptrs = K + k_head_offset + offs_n[:, None] * stride_k + offs_d[None, :]
+        k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
-            # Mask padded positions (beyond seq_k)
-            s = tl.where(mask_n, s, -float("inf"))
+        # Attention scores: s = q_scaled @ k^T
+        s = tl.sum(q[None, :] * k, axis=1)
+        s = tl.where(k_mask_1d, s, -float("inf"))
 
         # Online softmax: update running max and rescale
         block_max = tl.max(s, axis=0)
@@ -205,6 +192,14 @@ def attention_gqa(
         raise ValueError(
             f"All inputs must be 2D arrays, got q.ndim={q.ndim}, k.ndim={k.ndim}, v.ndim={v.ndim}"
         )
+    if q.shape[0] % n_head != 0:
+        raise ValueError(
+            f"Query shape[0] ({q.shape[0]}) must be divisible by n_head ({n_head})"
+        )
+    if k.shape[0] % n_kv_head != 0:
+        raise ValueError(
+            f"Key shape[0] ({k.shape[0]}) must be divisible by n_kv_head ({n_kv_head})"
+        )
 
     # Input format: all inputs in FLAT format (n_head * seq, d_k).
     # The model code is responsible for reshaping before calling this function.
@@ -228,7 +223,10 @@ def attention_gqa(
             f"V shape {v.shape} != expected ({n_kv_head * seq_k}, {d_k})"
         )
     # --- Handle empty inputs ---
-    if seq_q == 0 or seq_k == 0:
+    if seq_q == 0:
+        return np.empty((0, d_k), dtype=np.float32)
+    if seq_k == 0:
+        # When there are no keys/values to attend to, output should be zeros
         return np.zeros((n_head * seq_q, d_k), dtype=np.float32)
 
     if d_k <= 0 or (d_k & (d_k - 1)) != 0:
