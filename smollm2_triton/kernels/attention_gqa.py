@@ -159,13 +159,11 @@ def attention_gqa(
 ) -> np.ndarray:
     """Fused GQA (Grouped Query Attention): O = softmax(Q @ K^T / sqrt(d_k)) @ V.
 
-    Supports both flat and 2D input formats:
+    Input format (flat)::
 
-    - **Flat:** ``(n_head * seq_q, d_k)``  — rows grouped by head
-    - **2D:**   ``(seq_q, n_head * d_k)``  — heads interleaved in the last dim
-
-    K/V follow the same pattern with ``n_kv_head`` instead of ``n_head``.
-    If 2D input is detected, it is automatically reshaped to flat format.
+        Q: (n_head * seq_q, d_k)  — rows grouped by head
+        K: (n_kv_head * seq_k, d_k)
+        V: (n_kv_head * seq_k, d_k)
 
     When ``causal=True`` (default), a causal (upper-triangular) mask is applied
     so that position *i* can only attend to positions ``j <= i``.
@@ -173,11 +171,11 @@ def attention_gqa(
     Parameters
     ----------
     q : np.ndarray
-        Query, shape ``(n_head * seq_q, d_k)`` [flat] or ``(seq_q, n_head * d_k)`` [2D], float32.
+        Query, shape ``(n_head * seq_q, d_k)``, float32.
     k : np.ndarray
-        Key, shape ``(n_kv_head * seq_k, d_k)`` [flat] or ``(seq_k, n_kv_head * d_k)`` [2D], float32.
+        Key, shape ``(n_kv_head * seq_k, d_k)``, float32.
     v : np.ndarray
-        Value, shape ``(n_kv_head * seq_k, d_k)`` [flat] or ``(seq_k, n_kv_head * d_k)`` [2D], float32.
+        Value, shape ``(n_kv_head * seq_k, d_k)``, float32.
     n_head : int
         Number of query heads.
     n_kv_head : int
