@@ -5,8 +5,6 @@ Tests cover correctness against a NumPy reference, identity at position 0,
 position offset behavior, empty input, precompute correctness, and single-row.
 """
 
-import math
-
 import numpy as np
 from smollm2_triton.kernels.rope import apply_rope, precompute_cos_sin
 
@@ -33,32 +31,6 @@ def rope_ref(x, cos, sin, seq_len, position_offset=0):
             result[row, i] = x_even * c - x_odd * s
             result[row, i + half] = x_even * s + x_odd * c
     return result
-
-
-def _test_case(name, x, cos, sin, seq_len, position_offset, atol=1e-4):
-    """Run a single test case and print status."""
-    out = apply_rope(x, cos, sin, seq_len=seq_len, position_offset=position_offset)
-    ref = rope_ref(x, cos, sin, seq_len, position_offset)
-
-    # Compare only valid positions (shape should match).
-    shape_ok = out.shape == x.shape
-    max_diff = float(np.abs(out - ref).max())
-    value_ok = np.allclose(out, ref, atol=atol, rtol=1e-4)
-
-    # For identity test at position 0, also check x unchanged.
-    identity_ok = None
-    if position_offset == 0 and seq_len >= 1:
-        identity_ok = np.allclose(out, x, atol=atol)
-
-    passed = shape_ok and value_ok
-    extra = f"max_diff={max_diff:.2e}"
-    if identity_ok is not None:
-        extra += f" | identity_at_pos0={identity_ok}"
-
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] {name:<50} | {extra}")
-    assert passed, f"Test '{name}' failed: shape_ok={shape_ok}, max_diff={max_diff:.2e}"
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +115,6 @@ def test_rope_position_offset():
 
     np.random.seed(3)
     d_k = 64
-    half = d_k // 2
     seq_len = 16
     offset = 8
     max_seq = 64  # enough for max position
@@ -259,7 +230,6 @@ def test_rope_single_element():
 
     np.random.seed(5)
     d_k = 64
-    half = d_k // 2
     seq_len = 1
 
     cos, sin = precompute_cos_sin(8, d_k)

@@ -16,8 +16,6 @@ For each position p and head dimension pair (2i, 2i+1):
 Reference: https://arxiv.org/abs/2104.09864
 """
 
-import math
-
 import numpy as np
 import triton
 import triton.language as tl
