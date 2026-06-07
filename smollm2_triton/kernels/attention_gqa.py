@@ -96,9 +96,14 @@ def _gqa_attention_kernel(
     # Decode:   seq_q == 1, seq_k > seq_q, so abs_q_pos = seq_k - 1.
     abs_q_pos = seq_k - seq_q + q_pos
 
+    # Pre-compute tile-level pointer base to hoist per-iteration 2D arithmetic
+    offs_n_init = tl.arange(0, BLOCK_SIZE)
+    k_ptrs = K + k_head_offset + offs_n_init[:, None] * stride_k + offs_d[None, :]
+    v_ptrs = V + v_head_offset + offs_n_init[:, None] * stride_v + offs_d[None, :]
+
     # --- Single tiled pass over K, V ---
     for start in range(0, seq_k, BLOCK_SIZE):
-        offs_n = start + tl.arange(0, BLOCK_SIZE)
+        offs_n = start + offs_n_init
         mask_n = offs_n < seq_k
 
         if CAUSAL:
@@ -107,7 +112,6 @@ def _gqa_attention_kernel(
             k_mask_1d = mask_n
 
         k_mask = tl.broadcast_to(k_mask_1d[:, None], (BLOCK_SIZE, HEAD_SIZE))
-        k_ptrs = K + k_head_offset + offs_n[:, None] * stride_k + offs_d[None, :]
         k = tl.load(k_ptrs, mask=k_mask, other=0.0)
 
         # Attention scores: s = q_scaled @ k^T
@@ -122,7 +126,6 @@ def _gqa_attention_kernel(
         block_sum = tl.sum(p, axis=0)
 
         # Load V block: (BLOCK_SIZE, HEAD_SIZE)
-        v_ptrs = V + v_head_offset + offs_n[:, None] * stride_v + offs_d[None, :]
         v = tl.load(v_ptrs, mask=k_mask, other=0.0)
 
         # Fused update: acc = acc * rescale + p @ V_block
@@ -131,6 +134,10 @@ def _gqa_attention_kernel(
         # Update running statistics
         row_sum = row_sum * rescale + block_sum
         row_max = new_max
+
+        # Advance pointers to the next tile
+        k_ptrs += BLOCK_SIZE * stride_k
+        v_ptrs += BLOCK_SIZE * stride_v
 
     # Normalize by the final sum
     acc = acc / row_sum
