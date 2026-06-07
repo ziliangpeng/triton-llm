@@ -46,7 +46,7 @@ def test_rope_correctness():
     test_cases = [
         # (seq_len, d_k, n_rows)
         (8, 64, 576),        # SmolLM2-135M: seq=8, n_rows ~ batch*n_head*seq
-        (128, 64, 960),      # 128 tokens, 960 rows
+        (128, 64, 1024),     # 128 tokens, 1024 rows (8 * 128)
         (512, 64, 2048),     # 512 tokens, 2048 rows
         (16, 64, 144),       # 16 tokens, 144 rows (e.g. 2 heads, 9 seq)
         (32, 64, 32),        # 32 tokens, 1 row (single token)
