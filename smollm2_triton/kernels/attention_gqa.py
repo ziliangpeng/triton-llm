@@ -206,39 +206,17 @@ def attention_gqa(
             f"All inputs must be 2D arrays, got q.ndim={q.ndim}, k.ndim={k.ndim}, v.ndim={v.ndim}"
         )
 
+    # Input format: all inputs in FLAT format (n_head * seq, d_k).
+    # The model code is responsible for reshaping before calling this function.
+
     # Ensure C-contiguous float32
     q = np.require(q, dtype=np.float32, requirements=["C_CONTIGUOUS"])
     k = np.require(k, dtype=np.float32, requirements=["C_CONTIGUOUS"])
     v = np.require(v, dtype=np.float32, requirements=["C_CONTIGUOUS"])
 
-    # --- Detect format: flat vs 2D ---
-    # 2D format: (seq, n_head * d_k); Flat format: (n_head * seq, d_k)
-    d_k: int
-    seq_q: int
-    seq_k: int
-
-    # Check if inputs are in 2D format (seq, n_head * d_k)
-    is_2d = bool(
-        q.shape[1] % n_head == 0
-        and k.shape[1] % n_kv_head == 0
-        and v.shape[1] % n_kv_head == 0
-    )
-    if is_2d:
-        d_k_candidate = q.shape[1] // n_head
-        is_2d = is_2d and k.shape[1] == n_kv_head * d_k_candidate and v.shape[1] == n_kv_head * d_k_candidate
-
-    if is_2d:
-        d_k = q.shape[1] // n_head
-        seq_q = q.shape[0]
-        seq_k = k.shape[0]
-        # 2D → flat reshape
-        q = q.reshape(n_head * seq_q, d_k)
-        k = k.reshape(n_kv_head * seq_k, d_k)
-        v = v.reshape(n_kv_head * seq_k, d_k)
-    else:
-        d_k = q.shape[1]
-        seq_q = q.shape[0] // n_head
-        seq_k = k.shape[0] // n_kv_head
+    d_k = q.shape[1]
+    seq_q = q.shape[0] // n_head
+    seq_k = k.shape[0] // n_kv_head
 
     # --- Validate dimensions ---
     if k.shape != (n_kv_head * seq_k, d_k):
@@ -249,18 +227,14 @@ def attention_gqa(
         raise ValueError(
             f"V shape {v.shape} != expected ({n_kv_head * seq_k}, {d_k})"
         )
-    if not causal and seq_q == 0:
-        raise ValueError("seq_q must be > 0")
-    if not causal and seq_k == 0:
-        raise ValueError("seq_k must be > 0")
+    # --- Handle empty inputs ---
+    if seq_q == 0 or seq_k == 0:
+        return np.empty((n_head * seq_q, d_k), dtype=np.float32)
+
     if d_k <= 0 or (d_k & (d_k - 1)) != 0:
         raise ValueError(
             f"d_k ({d_k}) must be a positive power of 2 for Triton compilation"
         )
-
-    # --- Handle empty inputs ---
-    if seq_q == 0 or seq_k == 0:
-        return np.empty((n_head * seq_q, d_k), dtype=np.float32)
 
     # --- Strides in elements (not bytes) ---
     stride_q = q.strides[0] // q.itemsize  # == d_k for contiguous
