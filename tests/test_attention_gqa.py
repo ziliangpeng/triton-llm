@@ -18,16 +18,19 @@ def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 def _causal_mask(seq_q: int, seq_k: int) -> np.ndarray:
-    """Create causal mask: -inf for positions j > i, 0 elsewhere.
+    """Create causal mask: -inf for positions j > abs_pos_i, 0 elsewhere.
 
-    Each query position i attends only to key positions j <= i.
-    For decode mode (seq_q=1, seq_k>1), the single query attends to all past KV.
+    Each query position i (at absolute position seq_k - seq_q + i) attends only
+    to key positions j <= that absolute position.
+
+    For prefill (seq_q == seq_k): positions j > i get -inf.
+    For decode (seq_q == 1, seq_k > 1): single query attends to all past KV.
     """
     mask = np.zeros((seq_q, seq_k), dtype=np.float32)
     for i in range(seq_q):
-        j_limit = min(i + 1, seq_k)
-        if j_limit < seq_k:
-            mask[i, j_limit:] = -np.inf
+        abs_q_pos = seq_k - seq_q + i  # absolute position of query i
+        if abs_q_pos < seq_k - 1:
+            mask[i, abs_q_pos + 1:] = -np.inf
     return mask
 
 
@@ -219,6 +222,20 @@ def test_gqa_causal():
     assert unchanged, "Causal mask broken — earlier positions changed"
 
     print(f"  [INFO] Last position may differ (expected)")
+
+    # Test causal masking with seq_k > seq_q (KV cache style: n_head seq_q, but
+    # query positions are at absolute positions seq_k - seq_q + i)
+    seq_q2 = 2
+    seq_k2 = 8
+    q2 = np.random.randn(n_head * seq_q2, d_k).astype(np.float32)
+    k2 = np.random.randn(n_kv_head * seq_k2, d_k).astype(np.float32)
+    v2 = np.random.randn(n_kv_head * seq_k2, d_k).astype(np.float32)
+    out2 = attention_gqa(q2, k2, v2, n_head, n_kv_head, causal=True)
+    ref2 = attention_gqa_ref(q2, k2, v2, n_head, n_kv_head, causal=True)
+    passed2 = np.allclose(out2, ref2, atol=1e-4)
+    status2 = "PASS" if passed2 else "FAIL"
+    print(f"  [{status2}] seq_q={seq_q2}, seq_k={seq_k2}: max_diff={float(np.abs(out2 - ref2).max()):.2e}")
+    assert passed2, f"Causal mask with seq_k > seq_q failed"
 
 
 def test_gqa_non_causal():

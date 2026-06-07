@@ -30,17 +30,11 @@ def _gqa_attention_kernel(
     BLOCK_SIZE: tl.constexpr,
     CAUSAL: tl.constexpr,
 ):
-    """Fused GQA (optionally causal) attention for a single Q row.
+    """Fused GQA (optionally causal) attention for a single (seq_pos, q_head) pair.
 
-    Each program handles one row of the flat Q tensor (one (head, pos) pair).
-    Computes::
-
-        O[i, :] = softmax(Q[i, :] @ K_{kv_head}^T * sm_scale) @ V_{kv_head}
-
-    where ``kv_head = q_head // group_size`` and ``group_size = n_head // n_kv_head``.
-
-    When ``CAUSAL=True``, positions ``j > q_pos`` receive ``-inf`` before softmax.
-    When ``CAUSAL=False``, all key/value positions are attended to (no mask).
+    Launched with a 2D grid of shape ``(seq_q, n_head)`` so that each program
+    retrieves ``q_pos = tl.program_id(0)`` and ``q_head_idx = tl.program_id(1)``
+    directly without integer division.
 
     Uses online softmax for numerical stability in a single tiled pass.
 
@@ -58,6 +52,8 @@ def _gqa_attention_kernel(
         Number of query heads and key/value heads.
     sm_scale : float
         Softmax scale (e.g. 1.0 / sqrt(d_k)).
+    GROUP_SIZE : tl.constexpr
+        ``n_head // n_kv_head``, compile-time constant for fast division.
     HEAD_SIZE : tl.constexpr
         Head dimension (d_k) as a compile-time constant.
     BLOCK_SIZE : tl.constexpr
@@ -65,7 +61,10 @@ def _gqa_attention_kernel(
     CAUSAL : tl.constexpr
         If True, apply causal (upper-triangular) masking.
     """
-    pid = tl.program_id(0)
+    # 2D grid: q_pos = program_id(0), q_head_idx = program_id(1)
+    q_pos = tl.program_id(0)
+    q_head_idx = tl.program_id(1)
+    pid = q_head_idx * seq_q + q_pos  # flat row index
 
     # Cast raw int64 pointers to typed float32 pointers (Triton 3.x compat)
     Q = tl.cast(Q, tl.pointer_type(tl.float32))
@@ -73,16 +72,14 @@ def _gqa_attention_kernel(
     V = tl.cast(V, tl.pointer_type(tl.float32))
     O = tl.cast(O, tl.pointer_type(tl.float32))
 
-    # GQA routing: which Q head, which position, which KV head
-    q_head_idx = pid // seq_q
-    q_pos = pid % seq_q
+    # GQA routing: which KV head this Q head maps to
     kv_head_idx = q_head_idx // GROUP_SIZE
 
     # Load the query row
     offs_d = tl.arange(0, HEAD_SIZE)
     q = tl.load(Q + pid * stride_q + offs_d)
 
-    # Scale q by sm_scale (avoids runtime rsqrt per tile)
+    # Scale q by sm_scale
     q = q * sm_scale
 
     # --- Online softmax accumulators ---
@@ -94,13 +91,18 @@ def _gqa_attention_kernel(
     k_head_offset = kv_head_idx * seq_k * stride_k
     v_head_offset = kv_head_idx * seq_k * stride_v
 
+    # Absolute position of this query within the full sequence.
+    # Prefill:  seq_k == seq_q, so abs_q_pos = q_pos.
+    # Decode:   seq_q == 1, seq_k > seq_q, so abs_q_pos = seq_k - 1.
+    abs_q_pos = seq_k - seq_q + q_pos
+
     # --- Single tiled pass over K, V ---
     for start in range(0, seq_k, BLOCK_SIZE):
         offs_n = start + tl.arange(0, BLOCK_SIZE)
         mask_n = offs_n < seq_k
 
         if CAUSAL:
-            k_mask_1d = mask_n & (offs_n <= q_pos)
+            k_mask_1d = mask_n & (offs_n <= abs_q_pos)
         else:
             k_mask_1d = mask_n
 
@@ -251,7 +253,7 @@ def attention_gqa(
     stride_o = o_dev.shape[1]  # row stride in elements
 
     BLOCK_SIZE = 64
-    grid = (n_head * seq_q,)  # one program per Q row
+    grid = (seq_q, n_head)  # 2D grid: (seq_pos, q_head)
 
     _gqa_attention_kernel[grid](
         q_dev.data_ptr(),
