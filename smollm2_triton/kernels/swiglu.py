@@ -44,9 +44,14 @@ def _swiglu_kernel(
     x = tl.load(X + offsets, mask=mask, other=0.0)
     y = tl.load(Y + offsets, mask=mask, other=0.0)
 
-    # Numerically stable silu: clamp x before exp to prevent float32 overflow.
-    clamped = tl.minimum(tl.maximum(x, -20.0), 20.0)
-    silu = clamped / (1.0 + tl.exp(-clamped))
+    # Numerically stable sigmoid: avoids float32 overflow from exp(-large_positive).
+    # For x >= 0: sigmoid = 1 / (1 + exp(-x))  (exp(-x) is safe; ≤ 1)
+    # For x < 0:  sigmoid = exp(x) / (1 + exp(x)) (exp(x) is safe; < 1)
+    one = 1.0
+    sigmoid = tl.where(x >= 0,
+                       one / (one + tl.exp(-x)),
+                       tl.exp(x) / (one + tl.exp(x)))
+    silu = x * sigmoid
 
     result = silu * y
     tl.store(O + offsets, result, mask=mask)

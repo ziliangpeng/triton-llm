@@ -10,9 +10,13 @@ from smollm2_triton.kernels.swiglu import swiglu
 
 
 def silu_ref(x):
-    """NumPy reference SiLU: x * sigmoid(x) with clamping for stability."""
-    clamped = np.clip(x, -20.0, 20.0)
-    return clamped * (1.0 / (1.0 + np.exp(-clamped)))
+    """NumPy reference SiLU: x * sigmoid(x) with numerically stable branch."""
+    # For x >= 0: use 1/(1+exp(-x)) — exp(-x) is safe, ≤ 1
+    # For x < 0:  use exp(x)/(1+exp(x)) — exp(x) is safe, < 1
+    sigmoid = np.where(x >= 0,
+                       1.0 / (1.0 + np.exp(-x)),
+                       np.exp(x) / (1.0 + np.exp(x)))
+    return x * sigmoid
 
 
 def swiglu_ref(gate, up):
