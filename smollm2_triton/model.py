@@ -294,9 +294,11 @@ class SmolLM2ForCausalLM:
                     q_rope, cache["k"], cache["v"], n_head, n_kv_head, causal=False
                 )
 
-            # Output projection
-            attn_out = attn_out.reshape(seq, n_head * d_k)
-            out = gemm(attn_out, self.o_proj_w[i])  # (seq, n_embd)
+            # Output projection — attn_out from GQA is head-major flat
+            # (n_head * seq, d_k), transpose back to (seq, n_head * d_k)
+            attn_out_head_major = attn_out  # (n_head * seq, d_k)
+            attn_out_seq_major = attn_out_head_major.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k)
+            out = gemm(attn_out_seq_major, self.o_proj_w[i])  # (seq, n_embd)
             hidden = add(out, residual)  # (seq, n_embd)
 
             # --- MLP sub-block ---
@@ -361,9 +363,11 @@ class SmolLM2ForCausalLM:
         # GQA attention
         attn_out = attention_gqa(q_rope, k_rope, v_flat, n_head, n_kv_head, causal=True)
 
-        # Output projection
-        attn_out = attn_out.reshape(seq, n_head * d_k)
-        out = gemm(attn_out, self.o_proj_w[layer_idx])  # (seq, n_embd)
+        # Output projection — attn_out from GQA is head-major flat (n_head * seq, d_k),
+        # need to transpose back to (seq, n_head * d_k) for output projection
+        attn_out_head_major = attn_out  # (n_head * seq, d_k)
+        attn_out_seq_major = attn_out_head_major.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k)
+        out = gemm(attn_out_seq_major, self.o_proj_w[layer_idx])  # (seq, n_embd)
         return out
 
     # ------------------------------------------------------------------
