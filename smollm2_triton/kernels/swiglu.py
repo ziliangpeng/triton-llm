@@ -2,10 +2,10 @@
 Triton SwiGLU Kernel (CUDA + HIP)
 
 Element-wise SwiGLU activation = silu(x) * y, where:
-    silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    silu(x) = x * sigmoid(x)
 
-Numerically stable silu via clamping x to [-20, 20] before exp
-to prevent float32 overflow from exp(large_positive).
+Numerically stable sigmoid via abs-based single-exp formulation:
+    exp(-|x|) is always safe (input ≤ 0, output ≤ 1).
 
 Reference: https://arxiv.org/abs/2002.05202 (Swish/SiLU) applied
 as gated activation in Llama-architecture FFN blocks.
