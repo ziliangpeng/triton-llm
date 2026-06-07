@@ -214,8 +214,8 @@ class SmolLM2ForCausalLM:
         d_k = self.config.n_embd // self.config.n_head
         self.kv_cache = [
             {
-                "k": np.empty((0, d_k), dtype=np.float32),
-                "v": np.empty((0, d_k), dtype=np.float32),
+                "k": np.empty((n_kv_head, 0, d_k), dtype=np.float32),
+                "v": np.empty((n_kv_head, 0, d_k), dtype=np.float32),
             }
             for _ in range(n_layer)
         ]
@@ -240,8 +240,8 @@ class SmolLM2ForCausalLM:
         if not hasattr(self, "kv_cache") or self.kv_cache is None:
             raise RuntimeError("_init_cache() must be called before _forward_cached()")
 
-        # Position offset = total tokens cached so far
-        prev_seq = self.kv_cache[0]["k"].shape[0] // n_kv_head
+        # Position offset = total tokens cached so far (sequence dim of 3D cache)
+        prev_seq = self.kv_cache[0]["k"].shape[1]
         seq = token_ids.shape[1]
 
         # --- Token embedding ---
@@ -274,24 +274,27 @@ class SmolLM2ForCausalLM:
             k_rope = apply_rope(k_flat, cos_slice, sin_slice, seq_len=seq)
 
             if is_prefill:
-                # Prefill: store K, V in cache (head-major flat format)
-                cache["k"] = k_rope  # (n_kv_head * seq, d_k)
-                cache["v"] = v_flat  # (n_kv_head * seq, d_k)
+                # Prefill: store K, V in cache as 3D (n_kv_head, seq, d_k)
+                cache["k"] = k_rope.reshape(n_kv_head, seq, d_k)
+                cache["v"] = v_flat.reshape(n_kv_head, seq, d_k)
                 attn_out = attention_gqa(
                     q_rope, k_rope, v_flat, n_head, n_kv_head, causal=True
                 )
             else:
-                # Decode: concat new K, V to cache preserving head-major flat layout
-                # Current cache: (n_kv_head * cached_seq, d_k), new: (n_kv_head * 1, d_k)
-                # Reshape to (n_kv_head, seq, d_k), concat along seq axis, flatten back
-                k_cached = cache["k"].reshape(n_kv_head, prev_seq, d_k)
-                k_new = k_rope.reshape(n_kv_head, 1, d_k)
-                cache["k"] = np.concatenate([k_cached, k_new], axis=1).reshape(-1, d_k)
-                v_cached = cache["v"].reshape(n_kv_head, prev_seq, d_k)
-                v_new = v_flat.reshape(n_kv_head, 1, d_k)
-                cache["v"] = np.concatenate([v_cached, v_new], axis=1).reshape(-1, d_k)
+                # Decode: concat new K, V along sequence dimension (axis 1)
+                cache["k"] = np.concatenate(
+                    [cache["k"], k_rope.reshape(n_kv_head, seq, d_k)], axis=1
+                )
+                cache["v"] = np.concatenate(
+                    [cache["v"], v_flat.reshape(n_kv_head, seq, d_k)], axis=1
+                )
                 attn_out = attention_gqa(
-                    q_rope, cache["k"], cache["v"], n_head, n_kv_head, causal=False
+                    q_rope,
+                    cache["k"].reshape(-1, d_k),
+                    cache["v"].reshape(-1, d_k),
+                    n_head,
+                    n_kv_head,
+                    causal=False,
                 )
 
             # Output projection — attn_out from GQA is head-major flat

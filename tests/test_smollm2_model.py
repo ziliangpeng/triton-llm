@@ -236,7 +236,7 @@ def test_model_rejects_empty_input():
 
     try:
         model.generate(token_ids, max_new_tokens=1)
-        print("  No exception raised (might be OK depending on kernel) [ACCEPTABLE]")
+        raise AssertionError("ValueError was not raised for empty input")
     except ValueError as e:
         print(f"  ValueError raised as expected: {e}  [PASS]")
     return True
