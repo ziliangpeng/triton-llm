@@ -39,7 +39,7 @@ def load_state_dict(weights_dir: str) -> dict:
         if not fname.endswith(".npy"):
             continue
         path = os.path.join(weights_dir, fname)
-        key = fname[:-4].replace("_", ".")  # reverse the safe_name transform
+        key = fname[:-4]  # remove .npy suffix, keep original name with dots
         arr = np.load(path)
         state[key] = arr
     return state

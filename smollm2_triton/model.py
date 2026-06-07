@@ -160,6 +160,11 @@ class SmolLM2ForCausalLM:
         logits : np.ndarray, shape ``(1, seq, vocab_size)``, float32
             Unnormalised logits for each position.
         """
+        if token_ids.ndim != 2 or token_ids.shape[0] != 1:
+            raise ValueError(
+                f"token_ids must be a 2D array with shape (1, seq), "
+                f"got shape {token_ids.shape}"
+            )
         if use_cache:
             return self._forward_cached(token_ids)
         return self._forward_full(token_ids)
@@ -257,10 +262,10 @@ class SmolLM2ForCausalLM:
             k = gemm(h, self.k_proj_w[i])  # (seq, n_kv_head * d_k)
             v = gemm(h, self.v_proj_w[i])  # (seq, n_kv_head * d_k)
 
-            # Reshape to flat format
-            q_flat = q.reshape(n_head * seq, d_k)
-            k_flat = k.reshape(n_kv_head * seq, d_k)
-            v_flat = v.reshape(n_kv_head * seq, d_k)
+            # Reshape and transpose to head-major flat: (seq, n_head, d_k) -> (n_head, seq, d_k) -> (n_head * seq, d_k)
+            q_flat = q.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            k_flat = k.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            v_flat = v.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
 
             # Apply RoPE
             cos_slice = self.cos[prev_seq:prev_seq + seq, :]
@@ -269,16 +274,22 @@ class SmolLM2ForCausalLM:
             k_rope = apply_rope(k_flat, cos_slice, sin_slice, seq_len=seq)
 
             if is_prefill:
-                # Prefill: store K, V in cache
+                # Prefill: store K, V in cache (head-major flat format)
                 cache["k"] = k_rope  # (n_kv_head * seq, d_k)
                 cache["v"] = v_flat  # (n_kv_head * seq, d_k)
                 attn_out = attention_gqa(
                     q_rope, k_rope, v_flat, n_head, n_kv_head, causal=True
                 )
             else:
-                # Decode: concat new K, V to cache
-                cache["k"] = np.concatenate([cache["k"], k_rope], axis=0)
-                cache["v"] = np.concatenate([cache["v"], v_flat], axis=0)
+                # Decode: concat new K, V to cache preserving head-major flat layout
+                # Current cache: (n_kv_head * cached_seq, d_k), new: (n_kv_head * 1, d_k)
+                # Reshape to (n_kv_head, seq, d_k), concat along seq axis, flatten back
+                k_cached = cache["k"].reshape(n_kv_head, prev_seq, d_k)
+                k_new = k_rope.reshape(n_kv_head, 1, d_k)
+                cache["k"] = np.concatenate([k_cached, k_new], axis=1).reshape(-1, d_k)
+                v_cached = cache["v"].reshape(n_kv_head, prev_seq, d_k)
+                v_new = v_flat.reshape(n_kv_head, 1, d_k)
+                cache["v"] = np.concatenate([v_cached, v_new], axis=1).reshape(-1, d_k)
                 attn_out = attention_gqa(
                     q_rope, cache["k"], cache["v"], n_head, n_kv_head, causal=False
                 )
@@ -336,10 +347,10 @@ class SmolLM2ForCausalLM:
         k = gemm(h_2d, self.k_proj_w[layer_idx])  # (seq, n_kv_head * d_k)
         v = gemm(h_2d, self.v_proj_w[layer_idx])  # (seq, n_kv_head * d_k)
 
-        # Reshape to flat format
-        q_flat = q.reshape(n_head * seq, d_k)
-        k_flat = k.reshape(n_kv_head * seq, d_k)
-        v_flat = v.reshape(n_kv_head * seq, d_k)
+        # Reshape and transpose to head-major flat: (seq, n_head, d_k) -> (n_head, seq, d_k) -> (n_head * seq, d_k)
+        q_flat = q.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+        k_flat = k.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+        v_flat = v.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
 
         # Apply RoPE
         cos_slice = self.cos[prev_seq:prev_seq + seq, :]
@@ -413,6 +424,7 @@ class SmolLM2ForCausalLM:
             scaled = logits / temperature
             probs = softmax(scaled.reshape(1, -1)).ravel()
             if top_k > 0:
+                top_k = min(top_k, len(probs))
                 indices = np.argpartition(probs, -top_k)[-top_k:]
                 filtered = np.zeros_like(probs)
                 filtered[indices] = probs[indices]

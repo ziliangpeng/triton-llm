@@ -126,7 +126,7 @@ def test_model_kv_cache_equivalence():
 
 
 def test_model_kv_cache_decode():
-    """Generate with KV cache produces correct shape and valid tokens."""
+    """Verify that single-token decode logits match full forward logits."""
     print("\n=== test_model_kv_cache_decode ===")
     config = SmolLM2Config(
         vocab_size=100,
@@ -142,12 +142,26 @@ def test_model_kv_cache_decode():
 
     model = SmolLM2ForCausalLM(config, weights)
     prompt = np.array([[5, 12, 7]], dtype=np.int32)
-    out = model.generate(prompt, max_new_tokens=5, temperature=0.0)
 
-    assert out.shape == (1, 8)
-    assert np.all(out >= 0) and np.all(out < config.vocab_size), \
-        f"Tokens out of range: min={out.min()}, max={out.max()}"
-    print(f"  Output shape: {out.shape}, tokens in [0, {config.vocab_size})  [PASS]")
+    # 1. Run prefill on prompt
+    model._init_cache()
+    _ = model.forward(prompt, use_cache=True)
+
+    # 2. Run decode on next token
+    next_token = np.array([[9]], dtype=np.int32)
+    logits_decode = model.forward(next_token, use_cache=True)
+
+    # 3. Run full forward on prompt + next token
+    full_seq = np.concatenate([prompt, next_token], axis=1)
+    logits_full = model.forward(full_seq, use_cache=False)
+
+    # Compare the last token's logits
+    np.testing.assert_allclose(
+        logits_decode[:, -1, :], logits_full[:, -1, :],
+        rtol=1e-5, atol=1e-5,
+        err_msg="Decode logits must match full forward logits for the last token",
+    )
+    print("  Decode logits match full forward logits  [PASS]")
     return True
 
 

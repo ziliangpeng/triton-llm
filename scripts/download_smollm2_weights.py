@@ -48,8 +48,7 @@ def download_weights(variant: str = "SmolLM2-135M", output_dir: str = "./weights
         with safe_open(local_path, framework="np", device="cpu") as f:
             for key in f.keys():
                 arr = f.get_tensor(key)
-                safe_name = key.replace(".", "_")
-                np.save(os.path.join(output_dir, f"{safe_name}.npy"), arr)
+                np.save(os.path.join(output_dir, f"{key}.npy"), arr)
                 count += 1
 
     print(f"Downloaded {count} tensors to {output_dir}/")
