@@ -160,9 +160,9 @@ class SmolLM2ForCausalLM:
         logits : np.ndarray, shape ``(1, seq, vocab_size)``, float32
             Unnormalised logits for each position.
         """
-        if token_ids.ndim != 2 or token_ids.shape[0] != 1:
+        if token_ids.ndim != 2 or token_ids.shape[0] != 1 or token_ids.shape[1] == 0:
             raise ValueError(
-                f"token_ids must be a 2D array with shape (1, seq), "
+                f"token_ids must be a non-empty 2D array with shape (1, seq), "
                 f"got shape {token_ids.shape}"
             )
         if use_cache:
@@ -473,6 +473,10 @@ class SmolLM2ForCausalLM:
             raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
         if token_ids.shape[1] == 0:
             raise ValueError("token_ids must have at least 1 token")
+        if temperature < 0.0:
+            raise ValueError("temperature must be non-negative")
+        if top_k < 0:
+            raise ValueError("top_k must be non-negative")
         total_tokens = token_ids.shape[1] + max_new_tokens
         if total_tokens > self.config.max_position_embeddings:
             raise ValueError(

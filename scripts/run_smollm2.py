@@ -35,6 +35,8 @@ def load_state_dict(weights_dir: str) -> dict:
         Mapping from HF weight name (dots replaced with underscores) to array.
     """
     state = {}
+    if not os.path.exists(weights_dir):
+        return state
     for fname in os.listdir(weights_dir):
         if not fname.endswith(".npy"):
             continue
