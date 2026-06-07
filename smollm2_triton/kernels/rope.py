@@ -48,7 +48,7 @@ def _rope_kernel(
     pos = (pid % seq_len) + position_offset  # absolute position in sequence
 
     half = D_K // 2
-    offs_half = tl.arange(0, half)
+    offs_half = tl.arange(0, D_K // 2)
     offs_even = offs_half            # 0, 1, ..., half-1
     offs_odd = offs_half + half      # half, half+1, ..., D_K-1
 

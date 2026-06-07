@@ -287,8 +287,8 @@ def test_rope_input_validation():
 
     # position_offset + seq_len exceeds cos table.
     try:
-        cos_small = precompute_cos_sin(4, d_k)
-        apply_rope(np.random.randn(4, 64).astype(np.float32), cos_small, sin, seq_len=4, position_offset=1)
+        cos_small, sin_small = precompute_cos_sin(4, d_k)
+        apply_rope(np.random.randn(4, 64).astype(np.float32), cos_small, sin_small, seq_len=4, position_offset=1)
         assert False, "Should have rejected offset that exceeds cos table"
     except ValueError:
         print("[PASS] Offset exceeding cos table correctly rejected")
