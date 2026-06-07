@@ -70,8 +70,10 @@ class SmolLM2ForCausalLM:
         # Llama ties lm_head with embed_tokens when tie_word_embeddings=True
         if "lm_head.weight" in weights:
             lm_w = weights["lm_head.weight"]
-        else:
+        elif config.tie_word_embeddings:
             lm_w = weights["model.embed_tokens.weight"]
+        else:
+            raise KeyError("lm_head.weight is missing from weights and tie_word_embeddings is False")
         # Transpose: (vocab, hidden) -> (hidden, vocab) for gemm(hidden, w)
         self.lm_head_w = np.require(
             lm_w.T.copy(), dtype=np.float32, requirements=["C_CONTIGUOUS"]
@@ -175,6 +177,10 @@ class SmolLM2ForCausalLM:
         n_layer = config.n_layer
         n_embd = config.n_embd
         seq = token_ids.shape[1]
+        if seq > config.max_position_embeddings:
+            raise ValueError(
+                f"Sequence length {seq} exceeds max_position_embeddings ({config.max_position_embeddings})"
+            )
 
         # --- Token embedding (no positional embedding for Llama) ---
         hidden = self._embed(token_ids)  # (1, seq, n_embd)
@@ -243,6 +249,10 @@ class SmolLM2ForCausalLM:
         # Position offset = total tokens cached so far (sequence dim of 3D cache)
         prev_seq = self.kv_cache[0]["k"].shape[1]
         seq = token_ids.shape[1]
+        if prev_seq + seq > config.max_position_embeddings:
+            raise ValueError(
+                f"Total sequence length {prev_seq + seq} exceeds max_position_embeddings ({config.max_position_embeddings})"
+            )
 
         # --- Token embedding ---
         hidden = self._embed(token_ids)  # (1, seq, n_embd)

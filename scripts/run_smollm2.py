@@ -42,7 +42,7 @@ def load_state_dict(weights_dir: str) -> dict:
             continue
         path = os.path.join(weights_dir, fname)
         key = fname[:-4]  # remove .npy suffix, keep original name with dots
-        arr = np.load(path)
+        arr = np.load(path, allow_pickle=False)
         state[key] = arr
     return state
 
