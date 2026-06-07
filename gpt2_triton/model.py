@@ -261,6 +261,8 @@ class GPT2Model:
         - Decode (self.kv_cache has data): process only the last token using
           cached K/V from previous steps.
 
+        Must call ``_init_cache()`` before the first call.
+
         Parameters
         ----------
         token_ids : np.ndarray, shape ``(1, seq)``, int32
@@ -280,6 +282,8 @@ class GPT2Model:
         # Compute position offset: total tokens processed before this call
         # (including all prior prompt + generated tokens).
         # Use the first head's first-layer cache length as the running count.
+        if not hasattr(self, "kv_cache") or self.kv_cache is None:
+            raise RuntimeError("_init_cache() must be called before _forward_cached()")
         prev_seq = self.kv_cache[0]["k"][0].shape[0]
         pos_offset = prev_seq
 
