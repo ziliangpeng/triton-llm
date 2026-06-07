@@ -200,8 +200,13 @@ def apply_rope(
     if n_rows == 0:
         return np.empty(orig_shape, dtype=np.float32)
 
-    # Stride in elements (not bytes).
-    stride_x = x.strides[0] // x.itemsize  # == d_k for contiguous input
+    if n_rows % seq_len != 0:
+        raise ValueError(
+            f"Total rows ({n_rows}) must be a multiple of seq_len ({seq_len})"
+        )
+
+    # Row stride in elements: guaranteeed d_k after flatten + contiguous.
+    stride_x = d_k
 
     # Block size for tl.arange: next power of 2 of half (supports odd d_k/2).
     half = d_k // 2

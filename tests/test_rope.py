@@ -292,11 +292,20 @@ def test_rope_input_validation():
         assert False, "Should have rejected offset that exceeds cos table"
     except ValueError:
         print("[PASS] Offset exceeding cos table correctly rejected")
+
+    # position_offset < 0.
     try:
         apply_rope(np.random.randn(4, 64).astype(np.float32), cos, sin, seq_len=1, position_offset=-1)
         assert False, "Should have rejected negative position_offset"
     except ValueError:
         print("[PASS] Negative offset correctly rejected")
+
+    # n_rows not a multiple of seq_len.
+    try:
+        apply_rope(np.random.randn(5, 64).astype(np.float32), cos, sin, seq_len=2)
+        assert False, "Should have rejected n_rows not a multiple of seq_len"
+    except ValueError:
+        print("[PASS] n_rows not a multiple of seq_len correctly rejected")
 
 
 # ---------------------------------------------------------------------------
