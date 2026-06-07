@@ -317,12 +317,9 @@ class GPT2Model:
                 cache["v"][head] = np.concatenate([cache["v"][head], v_h], axis=0)
 
                 # Fused attention -- with or without causal masking
-                # Prefill: K/V seq equals Q seq => causal=True
-                # Decode: K/V seq > Q seq => causal=False
-                # NOTE: This check relies on the np.concatenate above
-                # having already appended k_h/k_v. If the append is ever
-                # moved after the attention call, this logic breaks.
-                is_prefill = (cache["k"][head].shape[0] == seq)
+                # Prefill (seq > 1): causal mask on.
+                # Decode (seq == 1): attend to all cached K/V positions.
+                is_prefill = (seq > 1)
                 o_h = attention(q_h, cache["k"][head], cache["v"][head],
                                 causal=is_prefill)
                 attn_out[:, s:e] = o_h
@@ -445,6 +442,15 @@ class GPT2Model:
         """
         if token_ids.shape[0] != 1:
             raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
+        if token_ids.shape[1] == 0:
+            raise ValueError("token_ids must have at least 1 token")
+        total_tokens = token_ids.shape[1] + max_new_tokens
+        if total_tokens > self.config.n_positions:
+            raise ValueError(
+                f"total tokens ({total_tokens} = {token_ids.shape[1]} prompt "
+                f"+ {max_new_tokens} new) exceeds n_positions "
+                f"({self.config.n_positions})"
+            )
 
         self._init_cache()
 

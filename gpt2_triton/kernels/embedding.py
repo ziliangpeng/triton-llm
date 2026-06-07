@@ -137,6 +137,8 @@ def embedding(
         f"Embedding dimension mismatch: weight has {n_embd}, pos_weight has {n_embd_pos}"
     assert seq_len <= max_position, \
         f"seq_len ({seq_len}) exceeds max_position ({max_position})"
+    assert position_offset + seq_len <= max_position, \
+        f"position_offset ({position_offset}) + seq_len ({seq_len}) exceeds max_position ({max_position})"
 
     # Empty input shortcut
     if batch == 0 or seq_len == 0:

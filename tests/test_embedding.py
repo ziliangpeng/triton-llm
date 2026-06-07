@@ -141,6 +141,46 @@ def test_embedding_non_power_of_2():
     assert passed, f"Non-power-of-2 embedding failed, max_diff={max_diff:.2e}"
 
 
+def test_embedding_position_offset():
+    """Non-zero position_offset shifts the positional encoding index."""
+    print("\n=== Embedding Position Offset Test ===")
+
+    batch, seq_len, n_embd = 2, 3, 32
+    vocab_size = 10
+    max_position = 128
+
+    token_ids = np.array([[3, 7, 1], [2, 5, 0]], dtype=np.int32)
+    weight = np.random.randn(vocab_size, n_embd).astype(np.float32)
+    pos_weight = np.random.randn(max_position, n_embd).astype(np.float32)
+
+    offset = 10
+    out = embedding(token_ids, weight, pos_weight, position_offset=offset)
+
+    # Reference with offset
+    ref = np.zeros((batch, seq_len, n_embd), dtype=np.float32)
+    for b in range(batch):
+        for s in range(seq_len):
+            ref[b, s, :] = weight[token_ids[b, s], :] + pos_weight[s + offset, :]
+
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
+    status = "PASS" if passed else "FAIL"
+    print(f"[{status}] offset={offset} seq_len={seq_len} | max_diff={max_diff:.2e}")
+    assert passed, f"Position offset failed, max_diff={max_diff:.2e}"
+
+    # Also verify offset=0 matches original reference
+    out_zero = embedding(token_ids, weight, pos_weight, position_offset=0)
+    ref_zero = _ref_embedding(token_ids, weight, pos_weight)
+    max_diff_zero = float(np.abs(out_zero - ref_zero).max())
+    passed_zero = np.allclose(out_zero, ref_zero, atol=1e-4)
+    status_zero = "PASS" if passed_zero else "FAIL"
+    print(f"[{status_zero}] offset=0 (default) | max_diff={max_diff_zero:.2e}")
+    assert passed_zero, "offset=0 should match original ref"
+
+    # Verify offset != 0 produces different result
+    diff = float(np.abs(out - out_zero).max())
+    print(f"  |diff between offset=10 and offset=0| = {diff:.4f}")
+
 def test_embedding_single_position():
     """Single batch, single position edge case."""
     print("\n=== Embedding Single Position Test ===")
@@ -168,6 +208,7 @@ if __name__ == "__main__":
     test_embedding_first_token()
     test_embedding_empty()
     test_embedding_non_power_of_2()
+    test_embedding_position_offset()
     test_embedding_single_position()
     print("\n" + "=" * 45)
     print("All embedding tests PASSED")
