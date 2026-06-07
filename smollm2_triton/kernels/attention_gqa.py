@@ -96,9 +96,6 @@ def _gqa_attention_kernel(
 
     # --- Single tiled pass over K, V ---
     for start in range(0, seq_k, BLOCK_SIZE):
-        if CAUSAL and start > q_pos:
-            break
-
         offs_n = start + tl.arange(0, BLOCK_SIZE)
         mask_n = offs_n < seq_k
 
