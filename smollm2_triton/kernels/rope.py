@@ -31,6 +31,7 @@ def _rope_kernel(
     stride_x,           # row stride in elements (d_k)
     position_offset,    # start position (0 for prefill, cached_len for decode)
     D_K: tl.constexpr,  # head dimension
+    BLOCK_SIZE: tl.constexpr,  # next power of 2 of D_K // 2
 ):
     """
     One program instance per row. Applies RoPE in-place on X.
@@ -48,12 +49,12 @@ def _rope_kernel(
     pos = (pid % seq_len) + position_offset  # absolute position in sequence
 
     half = D_K // 2
-    offs_half = tl.arange(0, D_K // 2)
-    offs_even = offs_half            # 0, 1, ..., half-1
-    offs_odd = offs_half + half      # half, half+1, ..., D_K-1
+    offs_half = tl.arange(0, BLOCK_SIZE)
+    offs_even = offs_half            # 0, 1, ..., BLOCK_SIZE-1
+    offs_odd = offs_half + half      # half, half+1, ..., half+BLOCK_SIZE-1
 
     # Load even/odd halves of the X row.
-    x_even = tl.load(X + pid * stride_x + offs_even, mask=offs_even < D_K, other=0.0)
+    x_even = tl.load(X + pid * stride_x + offs_even, mask=offs_even < half, other=0.0)
     x_odd = tl.load(X + pid * stride_x + offs_odd, mask=offs_odd < D_K, other=0.0)
 
     # Load cos/sin for this position (half-packed: (max_seq, d_k//2)).
@@ -65,7 +66,7 @@ def _rope_kernel(
     rotated_odd = x_even * s + x_odd * c
 
     # Store back in-place.
-    tl.store(X + pid * stride_x + offs_even, rotated_even, mask=offs_even < D_K)
+    tl.store(X + pid * stride_x + offs_even, rotated_even, mask=offs_even < half)
     tl.store(X + pid * stride_x + offs_odd, rotated_odd, mask=offs_odd < D_K)
 
 
@@ -181,6 +182,14 @@ def apply_rope(
             f"sin.shape[-1]={sin.shape[-1]} must equal d_k//2={half}"
         )
 
+    # Validate that for 3D+ inputs, the second-to-last dim equals seq_len.
+    if x.ndim >= 3:
+        if x.shape[-2] != seq_len:
+            raise ValueError(
+                f"For multi-dim input, second-to-last dim ({x.shape[-2]}) must "
+                f"equal seq_len ({seq_len})"
+            )
+
     # Flatten all leading dimensions so the kernel sees (n_rows, d_k).
     x = np.ascontiguousarray(x.reshape(-1, d_k), dtype=np.float32)
     cos = np.ascontiguousarray(cos, dtype=np.float32)
@@ -193,6 +202,10 @@ def apply_rope(
 
     # Stride in elements (not bytes).
     stride_x = x.strides[0] // x.itemsize  # == d_k for contiguous input
+
+    # Block size for tl.arange: next power of 2 of half (supports odd d_k/2).
+    half = d_k // 2
+    block_size = triton.next_power_of_2(half)
 
     x_dev = gpu.to_device(x)
     cos_dev = gpu.to_device(cos)
@@ -209,6 +222,7 @@ def apply_rope(
         stride_x,
         position_offset,
         d_k,
+        block_size,
     )
 
     # Explicit device synchronize to ensure kernel completion before host read.
