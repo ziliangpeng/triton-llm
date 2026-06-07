@@ -27,7 +27,7 @@ def _swiglu_kernel(
 ):
     """Element-wise SwiGLU: O[i] = silu(X[i]) * Y[i].
 
-    Casts raw int64 pointers to typed float32 pointers (Triton 3.x compata).
+    Casts raw int64 pointers to typed float32 pointers (Triton 3.x compat).
     Masks out-of-bounds lanes to 0.0.
     """
     # Cast raw pointers to typed float32 pointers (Triton 3.x compat)
@@ -44,13 +44,13 @@ def _swiglu_kernel(
     x = tl.load(X + offsets, mask=mask, other=0.0)
     y = tl.load(Y + offsets, mask=mask, other=0.0)
 
-    # Numerically stable sigmoid: avoids float32 overflow from exp(-large_positive).
-    # For x >= 0: sigmoid = 1 / (1 + exp(-x))  (exp(-x) is safe; ≤ 1)
-    # For x < 0:  sigmoid = exp(x) / (1 + exp(x)) (exp(x) is safe; < 1)
+    # Numerically stable sigmoid via abs-based single-exp formulation.
+    # For x >= 0: sigmoid = 1 / (1 + exp(-|x|))
+    # For x < 0:  sigmoid = exp(-|x|) / (1 + exp(-|x|))
+    # exp(-|x|) is always safe (input ≤ 0, output ≤ 1).
+    exp_neg_abs = tl.exp(-tl.abs(x))
     one = 1.0
-    sigmoid = tl.where(x >= 0,
-                       one / (one + tl.exp(-x)),
-                       tl.exp(x) / (one + tl.exp(x)))
+    sigmoid = tl.where(x >= 0, one / (one + exp_neg_abs), exp_neg_abs / (one + exp_neg_abs))
     silu = x * sigmoid
 
     result = silu * y

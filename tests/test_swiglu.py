@@ -10,12 +10,11 @@ from smollm2_triton.kernels.swiglu import swiglu
 
 
 def silu_ref(x):
-    """NumPy reference SiLU: x * sigmoid(x) with numerically stable branch."""
-    # For x >= 0: use 1/(1+exp(-x)) — exp(-x) is safe, ≤ 1
-    # For x < 0:  use exp(x)/(1+exp(x)) — exp(x) is safe, < 1
-    sigmoid = np.where(x >= 0,
-                       1.0 / (1.0 + np.exp(-x)),
-                       np.exp(x) / (1.0 + np.exp(x)))
+    """NumPy reference SiLU: x * sigmoid(x) with numerically stable abs-based sigmoid."""
+    # exp(-|x|) is always safe (input ≤ 0, output ≤ 1).
+    abs_x = np.abs(x)
+    exp_neg_abs = np.exp(-np.clip(abs_x, None, 80.0))  # clip to avoid inf at extreme values
+    sigmoid = np.where(x >= 0, 1.0 / (1.0 + exp_neg_abs), exp_neg_abs / (1.0 + exp_neg_abs))
     return x * sigmoid
 
 
