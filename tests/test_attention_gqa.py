@@ -202,9 +202,11 @@ def test_gqa_causal():
     # Reference output
     ref = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
 
-    # Perturb the last key — causal mask should block its effect on earlier positions
+    # Perturb the last key position for all KV heads (correct GQA flat layout: 
+    # rows are (n_kv_head, seq, d_k), so perturb row (h*seq+seq-1, :) for each h)
     k_pert = k.copy()
-    k_pert[n_kv_head * (seq - 1):, :] = np.random.randn(n_kv_head, d_k).astype(np.float32)
+    for h in range(n_kv_head):
+        k_pert[h * seq + (seq - 1), :] = np.random.randn(d_k).astype(np.float32)
     out = attention_gqa(q, k_pert, v, n_head, n_kv_head, causal=True)
 
     # Reshape to (n_head, seq, d_k) to compare per-position
