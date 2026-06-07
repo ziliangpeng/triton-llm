@@ -20,15 +20,14 @@ def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
 def _causal_mask(seq_q: int, seq_k: int) -> np.ndarray:
     """Create causal mask: -inf for positions j > i, 0 elsewhere.
 
+    Each query position i attends only to key positions j <= i.
     For decode mode (seq_q=1, seq_k>1), the single query attends to all past KV.
     """
     mask = np.zeros((seq_q, seq_k), dtype=np.float32)
-    if seq_q == seq_k:
-        # Upper triangular: positions j > i get -inf
-        mask = np.triu(mask - np.inf, k=1)
-    elif seq_q == 1 and seq_k >= 1:
-        # Decode: single query attends to all past positions — no causal constraint
-        pass
+    for i in range(seq_q):
+        j_limit = min(i + 1, seq_k)
+        if j_limit < seq_k:
+            mask[i, j_limit:] = -np.inf
     return mask
 
 

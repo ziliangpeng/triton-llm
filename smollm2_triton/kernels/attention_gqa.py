@@ -25,6 +25,7 @@ def _gqa_attention_kernel(
     stride_q, stride_k, stride_v, stride_o,
     n_head, n_kv_head,
     sm_scale,
+    GROUP_SIZE: tl.constexpr,
     HEAD_SIZE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     CAUSAL: tl.constexpr,
@@ -75,8 +76,7 @@ def _gqa_attention_kernel(
     # GQA routing: which Q head, which position, which KV head
     q_head_idx = pid // seq_q
     q_pos = pid % seq_q
-    group_size = n_head // n_kv_head
-    kv_head_idx = q_head_idx // group_size
+    kv_head_idx = q_head_idx // GROUP_SIZE
 
     # Load the query row
     offs_d = tl.arange(0, HEAD_SIZE)
@@ -267,6 +267,7 @@ def attention_gqa(
         n_head,
         n_kv_head,
         sm_scale,
+        GROUP_SIZE=n_head // n_kv_head,
         HEAD_SIZE=d_k,
         BLOCK_SIZE=BLOCK_SIZE,
         CAUSAL=causal,
