@@ -83,7 +83,7 @@ def attention_gqa_ref(
         o_h = attn @ v_expanded[h]  # (seq_q, d_k)
         outputs.append(o_h)
 
-    return np.stack(outputs, axis=1)  # (seq_q, n_head, d_k)
+    return np.stack(outputs, axis=0).reshape(n_head * seq_q, d_k)  # (n_head * seq_q, d_k) flat
 
 
 # =============================================================================
@@ -107,10 +107,9 @@ def test_gqa_equivalence():
 
     out = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
     ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=True)
-    ref_flat = ref.reshape(n_head * seq, d_k)
 
-    max_diff = float(np.abs(out - ref_flat).max())
-    passed = np.allclose(out, ref_flat, atol=1e-4)
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] n_head={n_head}, n_kv_head={n_kv_head} | max_diff={max_diff:.2e}")
     assert passed, f"GQA equivalence test failed, max_diff={max_diff:.2e}"
@@ -136,10 +135,10 @@ def test_gqa_reduced_kv():
 
         out = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
         ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=True)
-        ref_flat = ref.reshape(n_head * seq, d_k)
+        ref = ref.reshape(n_head * seq, d_k)
 
-        max_diff = float(np.abs(out - ref_flat).max())
-        passed = np.allclose(out, ref_flat, atol=1e-4)
+        max_diff = float(np.abs(out - ref).max())
+        passed = np.allclose(out, ref, atol=1e-4)
         status = "PASS" if passed else "FAIL"
         print(f"  [{status}] n_head={n_head}, n_kv_head={n_kv_head}, d_k={d_k}, seq={seq} | max_diff={max_diff:.2e}")
         assert passed, f"Reduced KV test failed: n_head={n_head}, n_kv_head={n_kv_head}, d_k={d_k}, seq={seq}, max_diff={max_diff:.2e}"
@@ -177,10 +176,10 @@ def test_gqa_with_rope():
 
     # Reference: same RoPE + reference attention
     ref = attention_gqa_ref(q_rope, k_rope, v, n_head, n_kv_head, causal=True)
-    ref_flat = ref.reshape(n_head * seq, d_k)
+    ref = ref.reshape(n_head * seq, d_k)
 
-    max_diff = float(np.abs(out - ref_flat).max())
-    passed = np.allclose(out, ref_flat, atol=1e-4)
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] n_head={n_head}, n_kv_head={n_kv_head} | max_diff={max_diff:.2e}")
     assert passed, f"GQA with RoPE test failed, max_diff={max_diff:.2e}"
@@ -238,14 +237,14 @@ def test_gqa_non_causal():
 
     out = attention_gqa(q, k, v, n_head, n_kv_head, causal=False)
     ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=False)
-    ref_flat = ref.reshape(n_head * seq_q, d_k)
+    ref = ref.reshape(n_head * seq_q, d_k)
 
     assert out.shape == (n_head * seq_q, d_k), \
         f"Expected ({n_head * seq_q}, {d_k}), got {out.shape}"
     assert not np.any(np.isnan(out)), "Output contains NaN"
 
-    max_diff = float(np.abs(out - ref_flat).max())
-    passed = np.allclose(out, ref_flat, atol=1e-4)
+    max_diff = float(np.abs(out - ref).max())
+    passed = np.allclose(out, ref, atol=1e-4)
     status = "PASS" if passed else "FAIL"
     print(f"  [{status}] seq_q={seq_q}, seq_k={seq_k} | max_diff={max_diff:.2e}")
     assert passed, f"Non-causal GQA failed, max_diff={max_diff:.2e}"
