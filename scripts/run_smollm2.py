@@ -138,20 +138,20 @@ def _make_random_weights(config) -> dict:
     ffn = config.n_ffn
 
     weights = {
-        "model.embed_tokens.weight": np.random.randn(v, n).astype(np.float32),
-        "model.norm.weight": np.random.randn(n).astype(np.float32),
+        "model.embed_tokens.weight": np.random.randn(v, n).astype(np.float32) * 0.02,
+        "model.norm.weight": np.random.randn(n).astype(np.float32) * 0.02,
     }
     for i in range(n_layer):
         weights.update({
-            f"model.layers.{i}.input_layernorm.weight": np.random.randn(n).astype(np.float32),
-            f"model.layers.{i}.post_attention_layernorm.weight": np.random.randn(n).astype(np.float32),
-            f"model.layers.{i}.self_attn.q_proj.weight": np.random.randn(n_h * d_k, n).astype(np.float32),
-            f"model.layers.{i}.self_attn.k_proj.weight": np.random.randn(n_kv * d_k, n).astype(np.float32),
-            f"model.layers.{i}.self_attn.v_proj.weight": np.random.randn(n_kv * d_k, n).astype(np.float32),
-            f"model.layers.{i}.self_attn.o_proj.weight": np.random.randn(n, n_h * d_k).astype(np.float32),
-            f"model.layers.{i}.mlp.gate_proj.weight": np.random.randn(ffn, n).astype(np.float32),
-            f"model.layers.{i}.mlp.up_proj.weight": np.random.randn(ffn, n).astype(np.float32),
-            f"model.layers.{i}.mlp.down_proj.weight": np.random.randn(n, ffn).astype(np.float32),
+            f"model.layers.{i}.input_layernorm.weight": np.random.randn(n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.post_attention_layernorm.weight": np.random.randn(n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.self_attn.q_proj.weight": np.random.randn(n_h * d_k, n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.self_attn.k_proj.weight": np.random.randn(n_kv * d_k, n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.self_attn.v_proj.weight": np.random.randn(n_kv * d_k, n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.self_attn.o_proj.weight": np.random.randn(n, n_h * d_k).astype(np.float32) * 0.02,
+            f"model.layers.{i}.mlp.gate_proj.weight": np.random.randn(ffn, n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.mlp.up_proj.weight": np.random.randn(ffn, n).astype(np.float32) * 0.02,
+            f"model.layers.{i}.mlp.down_proj.weight": np.random.randn(n, ffn).astype(np.float32) * 0.02,
         })
     return weights
 

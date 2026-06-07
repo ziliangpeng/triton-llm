@@ -439,7 +439,8 @@ class SmolLM2ForCausalLM:
         """Sample next token from logits. Returns int."""
         if temperature > 1e-6:
             scaled = logits / temperature
-            probs = softmax(scaled.reshape(1, -1)).ravel()
+            probs = softmax(scaled.reshape(1, -1)).ravel().astype(np.float64)
+            probs /= probs.sum()
             if top_k > 0:
                 top_k = min(top_k, len(probs))
                 indices = np.argpartition(probs, -top_k)[-top_k:]
