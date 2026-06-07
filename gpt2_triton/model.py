@@ -1,7 +1,8 @@
 """
 GPT-2 Model with forward and generate using Triton kernels.
 
-No KV cache (full recompute each decode step).  Batch=1 only.
+Supports KV-cached incremental decode for efficient autoregressive generation.
+Batch=1 only.
 """
 
 import numpy as np
@@ -158,8 +159,35 @@ class GPT2Model:
     # Forward pass
     # ------------------------------------------------------------------
 
-    def forward(self, token_ids: np.ndarray) -> np.ndarray:
-        """Run a full forward pass over *all* input tokens.
+    def forward(self, token_ids: np.ndarray, use_cache: bool = False) -> np.ndarray:
+        """Run a forward pass over input tokens.
+
+        When ``use_cache=False`` (default), this performs a full forward pass
+        over all input tokens (no KV cache).
+
+        When ``use_cache=True``, this uses the KV cache for incremental
+        decode.  On the first call, the cache is populated (prefill); on
+        subsequent calls, only the last token is processed using cached
+        K/V from previous steps.
+
+        Parameters
+        ----------
+        token_ids : np.ndarray, shape ``(1, seq)``, int32
+            Input token IDs.
+        use_cache : bool
+            If True, use KV cache for incremental attention.
+
+        Returns
+        -------
+        logits : np.ndarray, shape ``(1, seq, vocab_size)``, float32
+            Unnormalised logits for each position.
+        """
+        if use_cache:
+            return self._forward_cached(token_ids)
+        return self._forward_full(token_ids)
+
+    def _forward_full(self, token_ids: np.ndarray) -> np.ndarray:
+        """Run a full forward pass over *all* input tokens (no KV cache).
 
         Parameters
         ----------
@@ -203,6 +231,120 @@ class GPT2Model:
 
         # --- LM head ---
         logits = gemm(h, self.lm_head_w)  # (seq, n_embd) @ (n_embd, vocab) -> (seq, vocab)
+        return logits.reshape(1, -1, config.vocab_size)
+
+    # ------------------------------------------------------------------
+    # Attention sub-block
+    # ------------------------------------------------------------------
+
+    def _init_cache(self):
+        """Initialize empty KV cache for a new generation."""
+        n_layer = self.config.n_layer
+        n_head = self.config.n_head
+        n_embd = self.config.n_embd
+        d_k = n_embd // n_head
+        # Per layer: list of {'k': [Head x np.array(cached_seq, d_k)], 'v': [Head x ...]}
+        self.kv_cache = [
+            {
+                "k": [np.empty((0, d_k), dtype=np.float32) for _ in range(n_head)],
+                "v": [np.empty((0, d_k), dtype=np.float32) for _ in range(n_head)],
+            }
+            for _ in range(n_layer)
+        ]
+
+    def _forward_cached(self, token_ids: np.ndarray) -> np.ndarray:
+        """Incremental forward pass using KV cache.
+
+        Supports two modes:
+        - Prefill (self.kv_cache is empty): process all tokens, store K/V for
+          all layers/heads.
+        - Decode (self.kv_cache has data): process only the last token using
+          cached K/V from previous steps.
+
+        Must call ``_init_cache()`` before the first call.
+
+        Parameters
+        ----------
+        token_ids : np.ndarray, shape ``(1, seq)``, int32
+            Input token IDs.  For decode steps, seq=1.
+
+        Returns
+        -------
+        logits : np.ndarray, shape ``(1, seq, vocab_size)``, float32
+            Unnormalised logits for each position.
+        """
+        config = self.config
+        n_layer = config.n_layer
+        n_embd = config.n_embd
+        n_head = config.n_head
+        d_k = n_embd // n_head
+
+        # Compute position offset: total tokens processed before this call
+        # (including all prior prompt + generated tokens).
+        # Use the first head's first-layer cache length as the running count.
+        if not hasattr(self, "kv_cache") or self.kv_cache is None:
+            raise RuntimeError("_init_cache() must be called before _forward_cached()")
+        prev_seq = self.kv_cache[0]["k"][0].shape[0]
+        pos_offset = prev_seq
+
+        # Embedding with position offset for correct positional encoding
+        hidden = embedding(token_ids, self.wte, self.wpe,
+                           position_offset=pos_offset)  # (1, seq, n_embd)
+        seq = hidden.shape[1]
+        hidden = hidden.reshape(-1, n_embd)  # (seq, n_embd)
+
+        for i in range(n_layer):
+            # --- Attention sub-block ---
+            residual = hidden  # (seq, n_embd)
+            h = layer_norm(hidden, self.ln_1_g[i], self.ln_1_b[i],
+                           config.layer_norm_epsilon)  # (seq, n_embd)
+
+            # QKV projection
+            qkv = gemm(h, self.c_attn_w[i])  # (seq, 3*n_embd)
+            qkv = add(qkv, np.broadcast_to(self.c_attn_b[i], qkv.shape))
+            q_all = qkv[:, :n_embd]   # (seq, n_embd)
+            k_all = qkv[:, n_embd:2 * n_embd]  # (seq, n_embd)
+            v_all = qkv[:, 2 * n_embd:]  # (seq, n_embd)
+
+            cache = self.kv_cache[i]
+            attn_out = np.empty(hidden.shape, dtype=np.float32)  # (seq, n_embd)
+
+            for head in range(n_head):
+                s = head * d_k
+                e = s + d_k
+                q_h = q_all[:, s:e]   # (seq, d_k)
+                k_h = k_all[:, s:e]   # (seq, d_k)
+                v_h = v_all[:, s:e]   # (seq, d_k)
+
+                # Append to cache
+                cache["k"][head] = np.concatenate([cache["k"][head], k_h], axis=0)
+                cache["v"][head] = np.concatenate([cache["v"][head], v_h], axis=0)
+
+                # Fused attention -- with or without causal masking
+                # Prefill (seq > 1): causal mask on.
+                # Decode (seq == 1): attend to all cached K/V positions.
+                is_prefill = (seq > 1)
+                o_h = attention(q_h, cache["k"][head], cache["v"][head],
+                                causal=is_prefill)
+                attn_out[:, s:e] = o_h
+
+            # Output projection
+            out = gemm(attn_out, self.c_proj_w[i])  # (seq, n_embd)
+            out = add(out, np.broadcast_to(self.c_proj_b[i], out.shape))
+            hidden = add(out, residual)  # (seq, n_embd)
+
+            # --- MLP sub-block (unchanged, no cache) ---
+            residual = hidden
+            h = layer_norm(hidden, self.ln_2_g[i], self.ln_2_b[i],
+                           config.layer_norm_epsilon)
+            h = self._apply_mlp(h, i)
+            hidden = add(h, residual)
+
+        # Final LN
+        h = layer_norm(hidden, self.ln_f_g, self.ln_f_b,
+                       config.layer_norm_epsilon)
+        # LM head
+        logits = gemm(h, self.lm_head_w)  # (seq, vocab_size)
         return logits.reshape(1, -1, config.vocab_size)
 
     # ------------------------------------------------------------------
@@ -259,6 +401,21 @@ class GPT2Model:
     # Generation
     # ------------------------------------------------------------------
 
+    def _sample(self, logits: np.ndarray, temperature: float, top_k: int) -> int:
+        """Sample next token from logits. Returns int."""
+        if temperature > 1e-6:
+            scaled = logits / temperature
+            probs = softmax(scaled.reshape(1, -1)).ravel()
+            if top_k > 0:
+                indices = np.argpartition(probs, -top_k)[-top_k:]
+                filtered = np.zeros_like(probs)
+                filtered[indices] = probs[indices]
+                filtered /= filtered.sum()
+                probs = filtered
+            return int(np.random.choice(len(probs), p=probs))
+        else:
+            return int(np.argmax(logits))
+
     def generate(
         self,
         token_ids: np.ndarray,
@@ -266,9 +423,9 @@ class GPT2Model:
         temperature: float = 1.0,
         top_k: int = 0,
     ) -> np.ndarray:
-        """Autoregressive generation.
+        """Autoregressive generation with KV cache.
 
-        No KV cache — full forward pass at each decode step.
+        Prefill -> then incremental decode with cached K/V.
 
         Parameters
         ----------
@@ -289,32 +446,31 @@ class GPT2Model:
         """
         if token_ids.shape[0] != 1:
             raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
-
-        for _ in range(max_new_tokens):
-            logits = self.forward(token_ids)          # (1, seq, V)
-            next_logits = logits[0, -1, :]            # (V,)
-
-            if temperature > 1e-6:
-                # Temperature-scaled sampling
-                scaled = next_logits / temperature
-                probs = softmax(scaled)                # (V,)
-
-                # Top-k filtering
-                if top_k > 0:
-                    indices = np.argpartition(probs, -top_k)[-top_k:]
-                    filtered = np.zeros_like(probs)
-                    filtered[indices] = probs[indices]
-                    filtered /= filtered.sum()
-                    probs = filtered
-
-                next_token = int(np.random.choice(len(probs), p=probs))
-            else:
-                # Greedy
-                next_token = int(np.argmax(next_logits))
-
-            token_ids = np.concatenate(
-                [token_ids, np.array([[next_token]], dtype=np.int32)],
-                axis=1,
+        if token_ids.shape[1] == 0:
+            raise ValueError("token_ids must have at least 1 token")
+        total_tokens = token_ids.shape[1] + max_new_tokens
+        if total_tokens > self.config.n_positions:
+            raise ValueError(
+                f"total tokens ({total_tokens} = {token_ids.shape[1]} prompt "
+                f"+ {max_new_tokens} new) exceeds n_positions "
+                f"({self.config.n_positions})"
             )
 
-        return token_ids
+        self._init_cache()
+
+        # Prefill: forward with cache, stores K/V for all positions
+        logits = self.forward(token_ids, use_cache=True)
+
+        # Generate loop
+        tokens = token_ids.copy()
+        for _ in range(max_new_tokens):
+            next_logits = logits[0, -1, :]  # (vocab_size,)
+            next_token = self._sample(next_logits, temperature, top_k)
+            tokens = np.concatenate(
+                [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+            )
+            if _ < max_new_tokens - 1:
+                # Single-token decode step
+                new_token_arr = np.array([[next_token]], dtype=np.int32)
+                logits = self.forward(new_token_arr, use_cache=True)
+        return tokens
