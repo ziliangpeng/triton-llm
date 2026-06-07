@@ -1,9 +1,8 @@
-"""
-Triton Grouped Query Attention (GQA) Kernel (CUDA + HIP)
+"""Triton Grouped Query Attention (GQA) Kernel (CUDA + HIP)
 
 Computes GQA with optional causal masking:
 
-    O = softmax(Q @ K^T / sqrt(d_k)) @ V
+    O = softmax(Q @ K^T * sm_scale) @ V
 
 where ``n_head`` query heads share ``n_kv_head`` key/value heads (n_kv_head <= n_head,
 with n_head divisible by n_kv_head).  Each query head maps to exactly one KV head:
@@ -25,6 +24,7 @@ def _gqa_attention_kernel(
     seq_q, seq_k,
     stride_q, stride_k, stride_v, stride_o,
     n_head, n_kv_head,
+    sm_scale,
     HEAD_SIZE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     CAUSAL: tl.constexpr,
@@ -34,7 +34,7 @@ def _gqa_attention_kernel(
     Each program handles one row of the flat Q tensor (one (head, pos) pair).
     Computes::
 
-        O[i, :] = softmax(Q[i, :] @ K_{kv_head}^T / sqrt(d_k)) @ V_{kv_head}
+        O[i, :] = softmax(Q[i, :] @ K_{kv_head}^T * sm_scale) @ V_{kv_head}
 
     where ``kv_head = q_head // group_size`` and ``group_size = n_head // n_kv_head``.
 
@@ -55,6 +55,8 @@ def _gqa_attention_kernel(
         Row strides in elements (not bytes).
     n_head, n_kv_head : int
         Number of query heads and key/value heads.
+    sm_scale : float
+        Softmax scale (e.g. 1.0 / sqrt(d_k)).
     HEAD_SIZE : tl.constexpr
         Head dimension (d_k) as a compile-time constant.
     BLOCK_SIZE : tl.constexpr
@@ -80,8 +82,8 @@ def _gqa_attention_kernel(
     offs_d = tl.arange(0, HEAD_SIZE)
     q = tl.load(Q + pid * stride_q + offs_d)
 
-    # Scale q at compile time (avoids runtime rsqrt per tile)
-    q = q * (1.0 / HEAD_SIZE ** 0.5)
+    # Scale q by sm_scale (avoids runtime rsqrt per tile)
+    q = q * sm_scale
 
     # --- Online softmax accumulators ---
     acc = tl.zeros((HEAD_SIZE,), dtype=tl.float32)
@@ -94,6 +96,9 @@ def _gqa_attention_kernel(
 
     # --- Single tiled pass over K, V ---
     for start in range(0, seq_k, BLOCK_SIZE):
+        if CAUSAL and start > q_pos:
+            break
+
         offs_n = start + tl.arange(0, BLOCK_SIZE)
         mask_n = offs_n < seq_k
 
@@ -109,7 +114,7 @@ def _gqa_attention_kernel(
             s = tl.sum(q[None, :] * k, axis=1)
 
             # Causal mask: positions after q_pos get -inf
-            s = tl.where(k_causal, s, -float("inf"))
+            s = tl.where(k_mask_1d, s, -float("inf"))
         else:
             # Load ALL K/V positions -- no causal gating
             k_mask_1d = mask_n
@@ -157,7 +162,7 @@ def attention_gqa(
     causal: bool = True,
     sm_scale: float | None = None,
 ) -> np.ndarray:
-    """Fused GQA (Grouped Query Attention): O = softmax(Q @ K^T / sqrt(d_k)) @ V.
+    """Fused GQA (Grouped Query Attention): O = softmax(Q @ K^T * sm_scale) @ V.
 
     Input format (flat)::
 
@@ -227,12 +232,16 @@ def attention_gqa(
         )
     # --- Handle empty inputs ---
     if seq_q == 0 or seq_k == 0:
-        return np.empty((n_head * seq_q, d_k), dtype=np.float32)
+        return np.zeros((n_head * seq_q, d_k), dtype=np.float32)
 
     if d_k <= 0 or (d_k & (d_k - 1)) != 0:
         raise ValueError(
             f"d_k ({d_k}) must be a positive power of 2 for Triton compilation"
         )
+
+    # Default sm_scale
+    if sm_scale is None:
+        sm_scale = 1.0 / (d_k ** 0.5)
 
     # --- Strides in elements (not bytes) ---
     stride_q = q.strides[0] // q.itemsize  # == d_k for contiguous
@@ -262,6 +271,7 @@ def attention_gqa(
         stride_o,
         n_head,
         n_kv_head,
+        sm_scale,
         HEAD_SIZE=d_k,
         BLOCK_SIZE=BLOCK_SIZE,
         CAUSAL=causal,
