@@ -17,6 +17,7 @@ import argparse
 import logging
 import os
 import sys
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -112,7 +113,7 @@ def decode(ids: list[int]) -> str:
 def download_weights(variant: str) -> dict:
     """Download real SmolLM2 weights from HuggingFace, return numpy dict."""
     hf_name = f"HuggingFaceTB/{variant}"
-    cache_dir = f"/tmp/{variant}-weights"
+    cache_dir = os.path.join(tempfile.gettempdir(), f"triton-llm-{variant}-weights")
     os.makedirs(cache_dir, exist_ok=True)
 
     marker = os.path.join(cache_dir, ".completed")
@@ -188,7 +189,7 @@ def warmup(model, tokenizer):
     After warmup, no Triton compilation happens on the first real request.
     Uses generate() so internal _init_cache() is called properly.
     """
-    import numpy as np
+    # numpy already imported at top of file
     ids = tokenizer.encode("a")
     token_ids = np.array([ids], dtype=np.int32)
 

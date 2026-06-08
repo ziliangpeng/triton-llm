@@ -165,12 +165,13 @@ def _print_completion_result(result: dict, prompt: str, raw: bool):
     if "error" in result:
         print(f"Error: {result['error']}", file=sys.stderr)
         sys.exit(1)
+    usage = result.get("usage", {})
     print(f"Prompt:     {prompt}")
-    print(f"Generated:  {result['text']}")
-    print(f"Usage:      {result['usage']['prompt_tokens']} prompt + "
-          f"{result['usage']['completion_tokens']} completion = "
-          f"{result['usage']['total_tokens']} tokens "
-          f"({result['usage']['time_seconds']}s)")
+    print(f"Generated:  {result.get('text', '')}")
+    print(f"Usage:      {usage.get('prompt_tokens', '?')} prompt + "
+          f"{usage.get('completion_tokens', '?')} completion = "
+          f"{usage.get('total_tokens', '?')} tokens "
+          f"({usage.get('time_seconds', '?')}s)")
 
 
 def _print_chat_result(result: dict, raw: bool):

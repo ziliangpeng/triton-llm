@@ -7,6 +7,7 @@ client-side helpers — no GPU or model required.
 from __future__ import annotations
 
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -39,7 +40,7 @@ class TestCompletionSchema:
     def test_empty_prompt_rejected(self):
         from scripts.serve_model import CompletionRequest
         with pytest.raises(ValidationError):
-            CompletionRequest(prompt="")  # min_length=... not set but empty should raise
+            CompletionRequest(prompt="")  # min_length=1 on Field rejects empty strings
 
     def test_max_tokens_bounds(self):
         from scripts.serve_model import CompletionRequest
@@ -167,17 +168,26 @@ class TestFormatChatPrompt:
 class TestClientQueries:
     """Test client query functions with a real mock HTTP server."""
 
+    @staticmethod
+    def _unused_port() -> int:
+        """Return a port that is guaranteed to be unused at this instant."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
     def test_query_completions_connection_refused(self):
         """Should return error dict when no server is listening."""
         from scripts.client import query_completions
-        result = query_completions("test", host="127.0.0.1", port=19999)
+        port = self._unused_port()
+        result = query_completions("test", host="127.0.0.1", port=port)
         assert "error" in result
         assert "Connection failed" in result["error"] or "refused" in result["error"]
 
     def test_query_chat_connection_refused(self):
         """Should return error dict when no server is listening."""
         from scripts.client import query_chat
+        port = self._unused_port()
         result = query_chat([{"role": "user", "content": "test"}],
-                            host="127.0.0.1", port=19999)
+                            host="127.0.0.1", port=port)
         assert "error" in result
         assert "Connection failed" in result["error"] or "refused" in result["error"]
