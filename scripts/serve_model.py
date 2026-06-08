@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""FastAPI HTTP server for SmolLM2 inference with real weights.
+"""FastAPI HTTP server for SmolLM2 inference.
 
-Usage on GPU compute node:
-    python scripts/serve_model.py --port 8000 --no-download
+Usage on a GPU compute node:
+    python scripts/serve_model.py --port 8000
 
-From local machine (after SSH tunnel is set up):
+From your local machine (after SSH tunnel is set up):
     python scripts/client.py --prompt "Hello world"
 
-To set up SSH tunnel (from maccai):
-    ssh -J gcp5 -L 8000:localhost:8000 -N gcp5-h100-0-9 &
+For fast testing without real weights:
+    python scripts/serve_model.py --port 8000 --no-download
 """
 
 from __future__ import annotations
@@ -30,10 +30,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logger = logging.getLogger("smollm2-server")
 
-# ── Schemas ───────────────────────────────────────────────────────────
+# ── Pydantic schemas ──────────────────────────────────────────────────
 
 class CompletionRequest(BaseModel):
     prompt: str = Field(..., description="Input text")
+    max_tokens: int = Field(default=50, ge=1, le=2048)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_k: int = Field(default=0, ge=0)
+    seed: int | None = Field(default=None)
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="One of: system, user, assistant")
+    content: str = Field(..., description="Message content")
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: list[ChatMessage] = Field(..., min_length=1)
     max_tokens: int = Field(default=50, ge=1, le=2048)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_k: int = Field(default=0, ge=0)
@@ -53,13 +66,25 @@ class CompletionResponse(BaseModel):
     usage: Usage
 
 
-# ── Global state ──────────────────────────────────────────────────────
+class ChatResponseChoice(BaseModel):
+    index: int = 0
+    message: ChatMessage
+    finish_reason: str = "length"
 
-# Filled during lifespan startup
+
+class ChatCompletionResponse(BaseModel):
+    id: str = "chatcmpl-1"
+    object: str = "chat.completion"
+    choices: list[ChatResponseChoice]
+    usage: Usage
+
+
+# ── Globals (set during lifespan startup) ─────────────────────────────
+
 model = None
 tokenizer = None
 model_variant = "SmolLM2-135M"
-no_download = False  # set from CLI
+no_download = False
 
 
 # ── Tokenizer ─────────────────────────────────────────────────────────
@@ -81,7 +106,7 @@ def decode(ids: list[int]) -> str:
     return tokenizer.decode(ids, skip_special_tokens=True)
 
 
-# ── Weights ────────────────────────────────────────────────────────────
+# ── Weights ───────────────────────────────────────────────────────────
 
 def download_weights(variant: str) -> dict:
     """Download real SmolLM2 weights from HuggingFace, return numpy dict."""
@@ -107,7 +132,6 @@ def download_weights(variant: str) -> dict:
         cache_dir=os.path.join(cache_dir, "hf-cache"),
     )
 
-    # load_file handles bfloat16 → float32 via torch
     tensors = load_file(sf_path, device="cpu")
     logger.info(f"  Converting {len(tensors)} tensors to float32...")
     for key, tensor in tensors.items():
@@ -156,6 +180,16 @@ def random_weights(cfg) -> dict:
     return w
 
 
+def format_chat_prompt(messages: list[dict]) -> str:
+    """Convert chat messages to a plain text prompt (base model, no chat template)."""
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(content)
+    return "\n".join(parts)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -167,10 +201,8 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Loading {model_variant}...")
 
-    # 1) Config
     cfg = SmolLM2Config.from_pretrained(model_variant)
 
-    # 2) Weights
     if no_download:
         weights = random_weights(cfg)
     else:
@@ -180,16 +212,14 @@ async def lifespan(app: FastAPI):
             logger.warning(f"  Download failed ({e}), falling back to random weights")
             weights = random_weights(cfg)
 
-    # 3) Model
     t0 = time.time()
     model = SmolLM2ForCausalLM(cfg, weights)
     logger.info(f"  Model created in {time.time() - t0:.1f}s")
 
-    # 4) Tokenizer (best-effort — server works without it)
     try:
         tokenizer = load_tokenizer(model_variant)
     except Exception as e:
-        logger.warning(f"  Tokenizer failed ({e}), prompt will be shown as token IDs")
+        logger.warning(f"  Tokenizer failed ({e})")
 
     logger.info(f"  Server ready on port {PORT}")
     yield
@@ -205,31 +235,34 @@ async def health():
     return {"status": "ok", "model": model_variant, "loaded": model is not None}
 
 
-@app.post("/v1/completions", response_model=CompletionResponse)
-async def completions(req: CompletionRequest):
+def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
+    """Shared generation logic for both /v1/completions and /v1/chat/completions."""
     if model is None:
         raise HTTPException(503, "Model not loaded")
 
-    token_ids = encode(req.prompt)
+    token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
     if seq_len == 0:
         raise HTTPException(400, "Empty prompt")
 
-    if req.seed is not None:
-        np.random.seed(req.seed)
+    if seed is not None:
+        np.random.seed(seed)
 
     t0 = time.time()
-    out = model.generate(
-        token_ids,
-        max_new_tokens=req.max_tokens,
-        temperature=req.temperature,
-        top_k=req.top_k,
-    )
+    out = model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
     dt = time.time() - t0
 
     new_ids = out[0, seq_len:].tolist()
     new_text = decode(new_ids)
 
+    return new_text, new_ids, seq_len, dt
+
+
+@app.post("/v1/completions", response_model=CompletionResponse)
+async def completions(req: CompletionRequest):
+    new_text, new_ids, seq_len, dt = _generate(
+        req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed
+    )
     return CompletionResponse(
         text=new_text,
         tokens=new_ids,
@@ -239,6 +272,28 @@ async def completions(req: CompletionRequest):
             total_tokens=seq_len + len(new_ids),
             time_seconds=round(dt, 3),
         ),
+    )
+
+
+@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+async def chat_completions(req: ChatCompletionRequest):
+    prompt = format_chat_prompt([m.model_dump() for m in req.messages])
+    new_text, new_ids, seq_len, dt = _generate(
+        prompt, req.max_tokens, req.temperature, req.top_k, req.seed
+    )
+    return ChatCompletionResponse(
+        usage=Usage(
+            prompt_tokens=seq_len,
+            completion_tokens=len(new_ids),
+            total_tokens=seq_len + len(new_ids),
+            time_seconds=round(dt, 3),
+        ),
+        choices=[
+            ChatResponseChoice(
+                message=ChatMessage(role="assistant", content=new_text),
+                finish_reason="length",
+            )
+        ],
     )
 
 
