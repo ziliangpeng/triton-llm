@@ -4,6 +4,7 @@
 Usage:
     python scripts/repl.py
     python scripts/repl.py --port 8000 --max-tokens 50 --temperature 0.7
+    python scripts/repl.py --stream
 """
 
 import argparse
@@ -38,15 +39,56 @@ def query(prompt: str, max_tokens: int, temperature: float,
     return data.get("text", json.dumps(data))
 
 
+def query_stream(prompt: str, max_tokens: int, temperature: float,
+                 host: str, port: int):
+    """Send streaming /v1/completions, yield token texts as they arrive."""
+    body = json.dumps({
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"http://{host}:{port}/v1/completions",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                line = line.decode("utf-8", errors="replace").strip()
+                if line.startswith("data: "):
+                    payload = line[6:]
+                    if payload == "[DONE]":
+                        return
+                    try:
+                        chunk = json.loads(payload)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            text = choices[0].get("text", "")
+                            is_last = choices[0].get("finish_reason") is not None
+                            yield text, is_last
+                    except json.JSONDecodeError:
+                        pass
+    except urllib.error.HTTPError as e:
+        yield f"[HTTP {e.code}] {e.read().decode()}", True
+    except urllib.error.URLError as e:
+        yield f"[Connection failed] {e.reason}", True
+
+
 def main():
     p = argparse.ArgumentParser(description="REPL — fresh completion each turn")
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--max-tokens", type=int, default=30)
     p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--stream", action="store_true",
+                   help="Stream tokens as they are generated")
     args = p.parse_args()
 
-    print(f"SmolLM2 REPL  (host={args.host}:{args.port}, max_tokens={args.max_tokens})")
+    mode = "streaming" if args.stream else "batch"
+    print(f"SmolLM2 REPL  (host={args.host}:{args.port}, max_tokens={args.max_tokens}, mode={mode})")
     print("Type your prompt.  Ctrl+D / Ctrl+C to exit.\n")
 
     while True:
@@ -58,9 +100,19 @@ def main():
         if not prompt.strip():
             continue
 
-        result = query(prompt, args.max_tokens, args.temperature,
-                       args.host, args.port)
-        print(result)
+        if args.stream:
+            print(end="", flush=True)
+            for token_text, is_last in query_stream(
+                prompt, args.max_tokens, args.temperature, args.host, args.port,
+            ):
+                if is_last and not token_text:
+                    break
+                print(token_text, end="", flush=True)
+            print()
+        else:
+            result = query(prompt, args.max_tokens, args.temperature,
+                           args.host, args.port)
+            print(result)
         print()
 
 
