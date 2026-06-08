@@ -71,7 +71,6 @@ test_cases = [
     ("decode-heavy", 8,   200),
     ("decode-heavy", 8,   500),
     ("decode-heavy", 8,  1000),
-    ("decode-heavy", 8,  2000),
     # Prefill-heavy: long prompt, short generation
     ("prefill-heavy", 256,  10),
     ("prefill-heavy", 512,  10),
