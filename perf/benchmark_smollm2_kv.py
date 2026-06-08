@@ -110,21 +110,21 @@ def main():
     del m, w
     print("Warmup done.\n", flush=True)
 
-    print("=" * 115)
-    print("SmolLM2-135M (30×576, 9H, 3KV) | H100 | Triton 3.4.0 | CUDA 13.0 | batch=1 | float32")
-    print("=" * 115)
+    print("=" * 115, flush=True)
+    print("SmolLM2-135M (30×576, 9H, 3KV) | H100 | Triton 3.4.0 | CUDA 13.0 | batch=1 | float32", flush=True)
+    print("=" * 115, flush=True)
 
     header = (f"{'case':<16} {'prompt':>6} {'gen':>6} {'total':>6} | "
               f"{'full(s)':<10} {'cache(s)':<10} {'speedup':<8} "
               f"{'pt_full(ms)':<10} {'pt_cache(ms)':<10} {'quality':<8} "
               f"{'cache_len':>9}")
-    print(header)
-    print("-" * 115)
+    print(header, flush=True)
+    print("-" * 115, flush=True)
 
     for case_name, prompt_len, gen_len in test_cases:
         total_seq = prompt_len + gen_len
         if total_seq > config.max_position_embeddings:
-            print(f"{case_name:<16} {prompt_len:>6} {gen_len:>6} {total_seq:>6} | SKIP (OOB)")
+            print(f"{case_name:<16} {prompt_len:>6} {gen_len:>6} {total_seq:>6} | SKIP (OOB)", flush=True)
             continue
 
         np.random.seed(42)
@@ -157,16 +157,16 @@ def main():
         print(f"{case_name:<16} {prompt_len:>6} {gen_len:>6} {total_seq:>6} | "
               f"{t_full:<10.4f} {t_cache:<10.4f} {spd:<8.2f}x "
               f"{perfull:<10.1f} {percache:<10.1f} {qual:<8} "
-              f"{final_cache_len:>9}")
-        print("-" * 115)
+              f"{final_cache_len:>9}", flush=True)
+        print("-" * 115, flush=True)
 
-    print()
-    print("Notes:")
-    print("  'full'  = full recompute (O(T²) each decode step)")
-    print("  'cache' = KV cache incremental decode (O(T) each decode step)")
-    print("  quality = token identity check between full and cached (greedy)")
-    print("  pt_*   = per-decode-step milliseconds")
-    print("  cache_len = KV cache position count after generation")
+    print(flush=True)
+    print("Notes:", flush=True)
+    print("  'full'  = full recompute (O(T²) each decode step)", flush=True)
+    print("  'cache' = KV cache incremental decode (O(T) each decode step)", flush=True)
+    print("  quality = token identity check between full and cached (greedy)", flush=True)
+    print("  pt_*   = per-decode-step milliseconds", flush=True)
+    print("  cache_len = KV cache position count after generation", flush=True)
 
 
 if __name__ == "__main__":
