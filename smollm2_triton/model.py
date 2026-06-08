@@ -230,6 +230,11 @@ class SmolLM2ForCausalLM:
             raise ValueError(
                 f"max_seq must be a positive integer, got {max_seq}"
             )
+        elif max_seq > self.config.max_position_embeddings:
+            raise ValueError(
+                f"max_seq ({max_seq}) cannot exceed model's "
+                f"max_position_embeddings ({self.config.max_position_embeddings})"
+            )
         n_layer = self.config.n_layer
         n_kv_head = self.config.n_kv_head
         d_k = self.config.n_embd // self.config.n_head

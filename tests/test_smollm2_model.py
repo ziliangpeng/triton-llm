@@ -297,6 +297,14 @@ def test_init_cache_rejects_invalid_max_seq():
     assert model._cache_len == 0
     assert model.kv_cache[0]["k"].shape[1] == 128
     print(f"  max_seq=128 cache shape: {model.kv_cache[0]['k'].shape}  [PASS]")
+
+    # Exceeding max_position_embeddings
+    try:
+        model._init_cache(max_seq=1024)
+        raise AssertionError("ValueError was not raised for max_seq > max_position_embeddings")
+    except ValueError as e:
+        print(f"  max_seq > max_position_embeddings raised ValueError: {e}  [PASS]")
+
     return True
 
 
