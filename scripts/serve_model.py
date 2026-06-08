@@ -65,6 +65,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_k: int = Field(default=0, ge=0)
     seed: int | None = Field(default=None)
+    stream: bool = Field(default=False, description="SSE streaming (not yet supported for chat)")
 
 
 class Usage(BaseModel):
@@ -291,19 +292,9 @@ async def health():
 
 def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
     """Shared generation logic for both /v1/completions and /v1/chat/completions."""
-    if model is None:
-        raise HTTPException(503, "Model not loaded")
-    if tokenizer is None:
-        raise HTTPException(503, "Tokenizer not loaded")
-
     token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
-    if seq_len == 0:
-        raise HTTPException(400, "Empty prompt")
-    if seq_len + max_tokens > model.config.n_positions:
-        raise HTTPException(400,
-                            f"Sequence too long: {seq_len} prompt + {max_tokens} new = "
-                            f"{seq_len + max_tokens}, max = {model.config.n_positions}")
+    _validate_request(seq_len, max_tokens, model.config.n_positions)
 
     if seed is not None:
         np.random.seed(seed)
@@ -318,25 +309,32 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
     return new_text, new_ids, seq_len, dt
 
 
-async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
-    """Async generator that yields SSE-formatted token chunks.
+def _validate_request(seq_len, max_tokens, n_positions):
+    """Shared input validation for both sync and streaming generation.
 
-    Runs the full model.generate() in a thread to avoid blocking the event loop,
-    then decodes and yields each new token one by one in SSE format.
+    Raises HTTPException if any check fails.
     """
     if model is None:
         raise HTTPException(503, "Model not loaded")
     if tokenizer is None:
         raise HTTPException(503, "Tokenizer not loaded")
-
-    token_ids = encode(req_prompt)
-    seq_len = token_ids.shape[1]
     if seq_len == 0:
         raise HTTPException(400, "Empty prompt")
-    if seq_len + max_tokens > model.config.n_positions:
+    if seq_len + max_tokens > n_positions:
         raise HTTPException(400,
                             f"Sequence too long: {seq_len} prompt + {max_tokens} new = "
-                            f"{seq_len + max_tokens}, max = {model.config.n_positions}")
+                            f"{seq_len + max_tokens}, max = {n_positions}")
+
+
+async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
+    """Async generator that yields SSE-formatted token chunks.
+
+    Runs the full model.generate() in a thread to avoid blocking the event loop,
+    then decodes and yields each new token one by one in SSE format.
+    Assumes validation has already been done by the route handler.
+    """
+    token_ids = encode(req_prompt)
+    seq_len = token_ids.shape[1]
 
     if seed is not None:
         np.random.seed(seed)
@@ -363,11 +361,20 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
         ]
     }
     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
-@app.post("/v1/completions", response_model=CompletionResponse)
+@app.post("/v1/completions")
 async def completions(req: CompletionRequest):
+    # Validate before StreamingResponse — HTTPException must be caught by FastAPI
+    # in the route handler, not inside the async generator.
+    if req.stream and (model is None or tokenizer is None):
+        raise HTTPException(503, "Model or tokenizer not loaded")
+
     if req.stream:
+        token_ids = encode(req.prompt)
+        seq_len = token_ids.shape[1]
+        _validate_request(seq_len, req.max_tokens, model.config.n_positions)
         return StreamingResponse(
             _stream_generate(req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
             media_type="text/event-stream",
@@ -389,6 +396,8 @@ async def completions(req: CompletionRequest):
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(req: ChatCompletionRequest):
+    if req.stream:
+        raise HTTPException(400, "Chat streaming not yet supported; use /v1/completions with stream=true")
     prompt = format_chat_prompt([m.model_dump() for m in req.messages])
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
