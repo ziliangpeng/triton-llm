@@ -186,26 +186,16 @@ def warmup(model, tokenizer):
     """Run dummy prefill + decode to trigger Triton JIT compilation.
 
     After warmup, no Triton compilation happens on the first real request.
+    Uses generate() so internal _init_cache() is called properly.
     """
     import numpy as np
     ids = tokenizer.encode("a")
     token_ids = np.array([ids], dtype=np.int32)
 
     t0 = time.time()
-    _ = model.forward(token_ids, use_cache=True)
-    dt = time.time() - t0
-    logger.info(f"  Warmup prefill: {dt:.1f}s  (Triton compile)")
-
-    t0 = time.time()
-    new_token = np.array([[token_ids[0, -1]]], dtype=np.int32)
-    _ = model.forward(new_token, use_cache=True)
-    dt = time.time() - t0
-    logger.info(f"  Warmup decode:  {dt:.1f}s  (Triton compile)")
-
-    t0 = time.time()
     _ = model.generate(token_ids, max_new_tokens=1, temperature=0.0)
     dt = time.time() - t0
-    logger.info(f"  Warmup generate (1 token): {dt:.1f}s  (prefill + 1 decode)")
+    logger.info(f"  Warmup prefill + 1 decode: {dt:.1f}s  (Triton compile all kernels)")
 
 
 def format_chat_prompt(messages: list[dict]) -> str:
