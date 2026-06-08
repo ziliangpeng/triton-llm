@@ -11,7 +11,7 @@ GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

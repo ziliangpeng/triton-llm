@@ -6,7 +6,7 @@ sizes and edge cases, including numerical stability with extreme values.
 """
 
 import numpy as np
-from gpt2_triton.kernels.softmax import softmax
+from triton_llm.kernels.softmax import softmax
 
 
 def _softmax_ref(x: np.ndarray, axis: int = -1) -> np.ndarray:

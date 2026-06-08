@@ -14,7 +14,7 @@ as gated activation in Llama-architecture FFN blocks.
 import triton
 import triton.language as tl
 import numpy as np
-from gpt2_triton import gpu
+from triton_llm import gpu
 
 
 @triton.jit

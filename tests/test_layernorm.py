@@ -4,7 +4,7 @@ Unit tests for Triton LayerNorm kernel (CUDA + HIP).
 
 import numpy as np
 import time
-from gpt2_triton.kernels.layernorm import layer_norm
+from triton_llm.kernels.layernorm import layer_norm
 
 
 def _layer_norm_reference(x, gamma, beta, eps=1e-5):

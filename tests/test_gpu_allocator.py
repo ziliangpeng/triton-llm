@@ -3,7 +3,7 @@ Tests for the GPU Memory Allocator (CUDA and HIP backends).
 """
 
 import numpy as np
-from gpt2_triton.gpu import to_device, to_host, allocate
+from triton_llm.gpu import to_device, to_host, allocate
 
 
 def test_roundtrip():

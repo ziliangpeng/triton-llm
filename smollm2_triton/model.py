@@ -6,14 +6,14 @@ a complete autoregressive language model.  Batch=1 only.
 
 import numpy as np
 
-from gpt2_triton.kernels.gemm import gemm
-from gpt2_triton.kernels.add import add
+from triton_llm.kernels.gemm import gemm
+from triton_llm.kernels.add import add
+from triton_llm.kernels.rms_norm import rms_norm
+from triton_llm.kernels.rope import precompute_cos_sin, apply_rope
+from triton_llm.kernels.swiglu import swiglu
+from triton_llm.kernels.attention_gqa import attention_gqa
 
 from smollm2_triton.config import SmolLM2Config
-from smollm2_triton.kernels.rms_norm import rms_norm
-from smollm2_triton.kernels.rope import precompute_cos_sin, apply_rope
-from smollm2_triton.kernels.swiglu import swiglu
-from smollm2_triton.kernels.attention_gqa import attention_gqa
 
 
 class SmolLM2ForCausalLM:

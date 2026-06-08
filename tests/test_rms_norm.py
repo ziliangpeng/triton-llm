@@ -3,7 +3,7 @@ Unit tests for Triton RMSNorm kernel (CUDA + HIP).
 """
 
 import numpy as np
-from smollm2_triton.kernels.rms_norm import rms_norm
+from triton_llm.kernels.rms_norm import rms_norm
 
 
 def rms_norm_ref(x, weight, eps=1e-5):

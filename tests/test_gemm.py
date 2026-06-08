@@ -4,7 +4,7 @@ Unit tests for Triton GEMM kernel (CUDA + HIP).
 
 import numpy as np
 import time
-from gpt2_triton.kernels.gemm import gemm
+from triton_llm.kernels.gemm import gemm
 
 
 def test_gemm_correctness():

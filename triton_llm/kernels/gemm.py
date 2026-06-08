@@ -8,7 +8,7 @@ Works on both NVIDIA (CUDA) and AMD (HIP/ROCm) via the unified gpu allocator.
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

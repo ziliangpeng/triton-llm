@@ -8,7 +8,7 @@ Two specialized code paths selected at Triton JIT compile time:
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

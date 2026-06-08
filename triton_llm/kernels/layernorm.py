@@ -13,7 +13,7 @@ This is the standard formulation used in GPT-2 (and most Transformer models).
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

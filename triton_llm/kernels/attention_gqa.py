@@ -15,7 +15,7 @@ Reference: https://arxiv.org/abs/2305.13245
 import triton
 import triton.language as tl
 import numpy as np
-from gpt2_triton import gpu
+from triton_llm import gpu
 
 
 @triton.jit

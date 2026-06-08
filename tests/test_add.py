@@ -7,7 +7,7 @@ dtype promotion, and shape-mismatch error handling.
 """
 
 import numpy as np
-from gpt2_triton.kernels.add import add
+from triton_llm.kernels.add import add
 
 
 def test_add_correctness():

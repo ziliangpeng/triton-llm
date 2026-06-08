@@ -7,7 +7,7 @@ Adds two numeric arrays element-wise (auto-converted to float32) using the
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

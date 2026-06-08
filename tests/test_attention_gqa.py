@@ -6,8 +6,8 @@ configurations including SmolLM2 model sizes.
 """
 
 import numpy as np
-from smollm2_triton.kernels.attention_gqa import attention_gqa
-from smollm2_triton.kernels.rope import precompute_cos_sin, apply_rope
+from triton_llm.kernels.attention_gqa import attention_gqa
+from triton_llm.kernels.rope import precompute_cos_sin, apply_rope
 
 
 def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
