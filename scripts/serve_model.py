@@ -85,6 +85,7 @@ model = None
 tokenizer = None
 model_variant = "SmolLM2-135M"
 no_download = False
+PORT = 8000  # default, overridden by CLI args in __main__
 
 
 # ── Tokenizer ─────────────────────────────────────────────────────────
@@ -157,8 +158,9 @@ def _load_dir(cache_dir: str) -> dict:
 def random_weights(cfg) -> dict:
     """Generate random weights for testing (output will be gibberish)."""
     n = cfg.hidden_size
-    n_q = cfg.num_attention_heads * 64
-    n_kv = cfg.num_key_value_heads * 64
+    d_head = n // cfg.num_attention_heads
+    n_q = cfg.num_attention_heads * d_head
+    n_kv = cfg.num_key_value_heads * d_head
     ffn = cfg.intermediate_size
     np.random.seed(42)
     w = {}
@@ -181,12 +183,17 @@ def random_weights(cfg) -> dict:
 
 
 def format_chat_prompt(messages: list[dict]) -> str:
-    """Convert chat messages to a plain text prompt (base model, no chat template)."""
+    """Convert chat messages to a plain text prompt (base model, no chat template).
+
+    Includes role prefixes so the model can distinguish system vs user vs assistant turns.
+    """
     parts = []
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        parts.append(content)
+        # Capitalise role for readability in the plain-text prompt
+        label = role.capitalize()
+        parts.append(f"{label}: {content}")
     return "\n".join(parts)
 
 
@@ -239,11 +246,17 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
     """Shared generation logic for both /v1/completions and /v1/chat/completions."""
     if model is None:
         raise HTTPException(503, "Model not loaded")
+    if tokenizer is None:
+        raise HTTPException(503, "Tokenizer not loaded")
 
     token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
     if seq_len == 0:
         raise HTTPException(400, "Empty prompt")
+    if seq_len + max_tokens > model.config.n_positions:
+        raise HTTPException(400,
+                            f"Sequence too long: {seq_len} prompt + {max_tokens} new = "
+                            f"{seq_len + max_tokens}, max = {model.config.n_positions}")
 
     if seed is not None:
         np.random.seed(seed)

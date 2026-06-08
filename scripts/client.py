@@ -111,8 +111,7 @@ def main():
     args = p.parse_args()
 
     if args.interactive:
-        _run_interactive(args)
-        return
+        sys.exit(_run_interactive(args))
 
     if args.chat:
         messages = []
@@ -125,11 +124,11 @@ def main():
     else:
         result = query_completions(args.prompt, args.max_tokens, args.temperature,
                                    args.top_k, args.seed, args.host, args.port)
-        _print_completion_result(result, args.raw)
+        _print_completion_result(result, args.prompt, args.raw)
 
 
 def _run_interactive(args):
-    """Run an interactive chat session."""
+    """Run an interactive chat session. Returns 0 on success, 1 on error."""
     print("Interactive chat (Ctrl+D to exit)\n")
     messages = []
     if args.system:
@@ -151,21 +150,22 @@ def _run_interactive(args):
 
         if "error" in result:
             print(f"Error: {result['error']}")
-            break
+            return 1
 
         assistant_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
         print(f"AI:  {assistant_text}\n")
         messages.append({"role": "assistant", "content": assistant_text})
+    return 0
 
 
-def _print_completion_result(result: dict, raw: bool):
+def _print_completion_result(result: dict, prompt: str, raw: bool):
     if raw:
         print(json.dumps(result, indent=2))
         return
     if "error" in result:
         print(f"Error: {result['error']}", file=sys.stderr)
         sys.exit(1)
-    print(f"Prompt:     {sys.argv[sys.argv.index('--prompt') + 1] if '--prompt' in sys.argv else ''}")
+    print(f"Prompt:     {prompt}")
     print(f"Generated:  {result['text']}")
     print(f"Usage:      {result['usage']['prompt_tokens']} prompt + "
           f"{result['usage']['completion_tokens']} completion = "
