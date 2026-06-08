@@ -95,7 +95,8 @@ def download_weights(variant: str) -> dict:
         return _load_dir(cache_dir)
 
     from huggingface_hub import hf_hub_download
-    from safetensors import safe_open
+    from safetensors.torch import load_file
+    import torch
 
     logger.info(f"  Downloading {variant} from HuggingFace...")
     t0 = time.time()
@@ -106,20 +107,18 @@ def download_weights(variant: str) -> dict:
         cache_dir=os.path.join(cache_dir, "hf-cache"),
     )
 
-    with safe_open(sf_path, framework="np", device="cpu") as f:
-        keys = f.keys()
-        logger.info(f"  Converting {len(keys)} tensors to float32...")
-        for key in keys:
-            arr = f.get_tensor(key)
-            if arr.dtype != np.float32:
-                arr = arr.astype(np.float32)
-            np.save(os.path.join(cache_dir, f"{key}.npy"), arr)
+    # load_file handles bfloat16 → float32 via torch
+    tensors = load_file(sf_path, device="cpu")
+    logger.info(f"  Converting {len(tensors)} tensors to float32...")
+    for key, tensor in tensors.items():
+        arr = tensor.to(torch.float32).numpy()
+        np.save(os.path.join(cache_dir, f"{key}.npy"), arr)
 
     with open(marker, "w") as f:
         f.write(f"download_time={time.time() - t0:.1f}s\n")
 
     dt = time.time() - t0
-    logger.info(f"  Done ({len(keys)} tensors, {dt:.1f}s)")
+    logger.info(f"  Done ({len(tensors)} tensors, {dt:.1f}s)")
     return _load_dir(cache_dir)
 
 
