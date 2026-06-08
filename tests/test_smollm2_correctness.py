@@ -67,8 +67,7 @@ def main():
     hf_model = AutoModelForCausalLM.from_pretrained(
         f"HuggingFaceTB/{args.variant}",
         torch_dtype=torch.float32,
-        device_map="cuda",
-    )
+    ).cuda()
     hf_model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(f"HuggingFaceTB/{args.variant}")
