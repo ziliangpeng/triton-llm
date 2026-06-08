@@ -217,6 +217,97 @@ def test_model_with_temperature():
     return True
 
 
+def test_model_prealloc_cache_full_trip():
+    """Pre-allocated KV cache: full prefill + multi-decode matches full recompute."""
+    print("\n=== test_model_prealloc_cache_full_trip ===")
+    config = SmolLM2Config(
+        vocab_size=100,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+        max_position_embeddings=512,
+    )
+    np.random.seed(42)
+    weights = _make_random_weights(config)
+
+    # --- Cached: prefill + decode ---
+    model_cache = SmolLM2ForCausalLM(config, weights)
+    model_cache._init_cache()
+    prompt = np.array([[5, 12, 7]], dtype=np.int32)
+    _ = model_cache.forward(prompt, use_cache=True)
+
+    tokens = prompt.copy()
+    for _ in range(5):
+        logits = model_cache.forward(
+            np.array([[tokens[0, -1]]], dtype=np.int32), use_cache=True
+        )
+        next_token = int(np.argmax(logits[0, -1, :]))
+        tokens = np.concatenate(
+            [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+        )
+
+    # --- Full recompute ---
+    model_full = SmolLM2ForCausalLM(config, weights)
+    full_tokens = prompt.copy()
+    for _ in range(5):
+        logits = model_full._forward_full(full_tokens)
+        next_token = int(np.argmax(logits[0, -1, :]))
+        full_tokens = np.concatenate(
+            [full_tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+        )
+
+    np.testing.assert_array_equal(
+        tokens, full_tokens,
+        err_msg="Pre-alloc KV cache generate and full recompute should produce identical tokens",
+    )
+    print(f"  Cached output:  {tokens.tolist()}")
+    print(f"  Full recompute: {full_tokens.tolist()}  [PASS]")
+    return True
+
+
+def test_init_cache_rejects_invalid_max_seq():
+    """_init_cache raises ValueError for non-positive max_seq."""
+    print("\n=== test_init_cache_rejects_invalid_max_seq ===")
+    config = SmolLM2Config(
+        vocab_size=100, hidden_size=64,
+        num_hidden_layers=2, num_attention_heads=4,
+        num_key_value_heads=2, intermediate_size=128,
+        max_position_embeddings=512,
+    )
+    np.random.seed(42)
+    weights = _make_random_weights(config)
+    model = SmolLM2ForCausalLM(config, weights)
+
+    try:
+        model._init_cache(max_seq=0)
+        raise AssertionError("ValueError was not raised for max_seq=0")
+    except ValueError as e:
+        print(f"  max_seq=0 raised ValueError: {e}  [PASS]")
+
+    try:
+        model._init_cache(max_seq=-1)
+        raise AssertionError("ValueError was not raised for max_seq=-1")
+    except ValueError as e:
+        print(f"  max_seq=-1 raised ValueError: {e}  [PASS]")
+
+    # Valid case should still work
+    model._init_cache(max_seq=128)
+    assert model._cache_len == 0
+    assert model.kv_cache[0]["k"].shape[1] == 128
+    print(f"  max_seq=128 cache shape: {model.kv_cache[0]['k'].shape}  [PASS]")
+
+    # Exceeding max_position_embeddings
+    try:
+        model._init_cache(max_seq=1024)
+        raise AssertionError("ValueError was not raised for max_seq > max_position_embeddings")
+    except ValueError as e:
+        print(f"  max_seq > max_position_embeddings raised ValueError: {e}  [PASS]")
+
+    return True
+
+
 def test_model_rejects_empty_input():
     """Empty prompt raises ValueError."""
     print("\n=== test_model_rejects_empty_input ===")
@@ -251,6 +342,8 @@ if __name__ == "__main__":
         ("test_model_kv_cache_decode", test_model_kv_cache_decode()),
         ("test_model_deterministic", test_model_deterministic()),
         ("test_model_with_temperature", test_model_with_temperature()),
+        ("test_model_prealloc_cache_full_trip", test_model_prealloc_cache_full_trip()),
+        ("test_init_cache_rejects_invalid_max_seq", test_init_cache_rejects_invalid_max_seq()),
         ("test_model_rejects_empty_input", test_model_rejects_empty_input()),
     ]
     print("\n" + "=" * 50)
