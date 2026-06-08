@@ -212,15 +212,28 @@ class SmolLM2ForCausalLM:
     # KV-cached forward
     # ------------------------------------------------------------------
 
-    def _init_cache(self):
-        """Initialise empty KV cache for a new generation."""
+    def _init_cache(self, max_seq: int | None = None):
+        """Initialise pre-allocated KV cache for generation.
+
+        Allocates the full ``(n_kv_head, max_seq, d_k)`` arrays to
+        eliminate ``np.concatenate`` at every decode step.
+
+        Parameters
+        ----------
+        max_seq : int or None
+            Maximum sequence length to pre-allocate. Defaults to
+            ``config.max_position_embeddings``.
+        """
+        if max_seq is None:
+            max_seq = self.config.max_position_embeddings
         n_layer = self.config.n_layer
         n_kv_head = self.config.n_kv_head
         d_k = self.config.n_embd // self.config.n_head
+        self._cache_len = 0
         self.kv_cache = [
             {
-                "k": np.empty((n_kv_head, 0, d_k), dtype=np.float32),
-                "v": np.empty((n_kv_head, 0, d_k), dtype=np.float32),
+                "k": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
+                "v": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
             }
             for _ in range(n_layer)
         ]
@@ -245,8 +258,8 @@ class SmolLM2ForCausalLM:
         if not hasattr(self, "kv_cache") or self.kv_cache is None:
             raise RuntimeError("_init_cache() must be called before _forward_cached()")
 
-        # Position offset = total tokens cached so far (sequence dim of 3D cache)
-        prev_seq = self.kv_cache[0]["k"].shape[1]
+        # Position offset = total tokens cached so far (_cache_len tracks seq dim)
+        prev_seq = self._cache_len
         seq = token_ids.shape[1]
 
         is_prefill = (prev_seq == 0)
@@ -256,10 +269,12 @@ class SmolLM2ForCausalLM:
                 "Use _forward_full() for multi-token forward passes "
                 "when the cache is non-empty."
             )
-        if prev_seq + seq > config.max_position_embeddings:
+        total_after = prev_seq + seq
+        max_seq = self.kv_cache[0]["k"].shape[1]
+        if total_after > max_seq:
             raise ValueError(
-                f"Total sequence length {prev_seq + seq} exceeds "
-                f"max_position_embeddings ({config.max_position_embeddings})"
+                f"Total sequence length {total_after} exceeds "
+                f"pre-allocated cache size ({max_seq})"
             )
 
         # --- Token embedding ---
@@ -292,28 +307,29 @@ class SmolLM2ForCausalLM:
             k_rope = apply_rope(k_flat, cos_slice, sin_slice, seq_len=seq)
 
             if is_prefill:
-                # Prefill: store K, V in cache as 3D (n_kv_head, seq, d_k)
-                cache["k"] = k_rope.reshape(n_kv_head, seq, d_k)
-                cache["v"] = v_flat.reshape(n_kv_head, seq, d_k)
+                # Prefill: store K, V as slice into pre-allocated cache
+                cache["k"][:, :seq, :] = k_rope.reshape(n_kv_head, seq, d_k)
+                cache["v"][:, :seq, :] = v_flat.reshape(n_kv_head, seq, d_k)
                 attn_out = attention_gqa(
                     q_rope, k_rope, v_flat, n_head, n_kv_head, causal=True
                 )
             else:
-                # Decode: concat new K, V along sequence dimension (axis 1)
-                cache["k"] = np.concatenate(
-                    [cache["k"], k_rope.reshape(n_kv_head, seq, d_k)], axis=1
-                )
-                cache["v"] = np.concatenate(
-                    [cache["v"], v_flat.reshape(n_kv_head, seq, d_k)], axis=1
-                )
+                # Decode: write new K, V into the next position(s)
+                k_3d = k_rope.reshape(n_kv_head, seq, d_k)
+                v_3d = v_flat.reshape(n_kv_head, seq, d_k)
+                cache["k"][:, prev_seq:prev_seq + seq, :] = k_3d
+                cache["v"][:, prev_seq:prev_seq + seq, :] = v_3d
+                # View of populated cache entries for attention
+                k_view = cache["k"][:, :total_after, :].reshape(-1, d_k)
+                v_view = cache["v"][:, :total_after, :].reshape(-1, d_k)
                 attn_out = attention_gqa(
-                    q_rope,
-                    cache["k"].reshape(-1, d_k),
-                    cache["v"].reshape(-1, d_k),
-                    n_head,
-                    n_kv_head,
+                    q_rope, k_view, v_view,
+                    n_head, n_kv_head,
                     causal=False,
                 )
+
+            # Update cache length after processing this step
+            self._cache_len = total_after
 
             # Output projection — attn_out from GQA is head-major flat
             # (n_head * seq, d_k), transpose back to (seq, n_head * d_k)
