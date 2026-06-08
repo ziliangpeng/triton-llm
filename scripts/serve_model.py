@@ -182,6 +182,32 @@ def random_weights(cfg) -> dict:
     return w
 
 
+def warmup(model, tokenizer):
+    """Run dummy prefill + decode to trigger Triton JIT compilation.
+
+    After warmup, no Triton compilation happens on the first real request.
+    """
+    import numpy as np
+    ids = tokenizer.encode("a")
+    token_ids = np.array([ids], dtype=np.int32)
+
+    t0 = time.time()
+    _ = model.forward(token_ids, use_cache=True)
+    dt = time.time() - t0
+    logger.info(f"  Warmup prefill: {dt:.1f}s  (Triton compile)")
+
+    t0 = time.time()
+    new_token = np.array([[token_ids[0, -1]]], dtype=np.int32)
+    _ = model.forward(new_token, use_cache=True)
+    dt = time.time() - t0
+    logger.info(f"  Warmup decode:  {dt:.1f}s  (Triton compile)")
+
+    t0 = time.time()
+    _ = model.generate(token_ids, max_new_tokens=1, temperature=0.0)
+    dt = time.time() - t0
+    logger.info(f"  Warmup generate (1 token): {dt:.1f}s  (prefill + 1 decode)")
+
+
 def format_chat_prompt(messages: list[dict]) -> str:
     """Convert chat messages to a plain text prompt (base model, no chat template).
 
@@ -208,25 +234,42 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Loading {model_variant}...")
 
+    # ── Config ──
+    t0 = time.time()
     cfg = SmolLM2Config.from_pretrained(model_variant)
+    logger.info(f"  Config loaded in {time.time() - t0:.1f}s")
 
+    # ── Weights ──
+    t0 = time.time()
     if no_download:
         weights = random_weights(cfg)
+        logger.info(f"  Random weights created in {time.time() - t0:.1f}s")
     else:
         try:
             weights = download_weights(model_variant)
         except Exception as e:
             logger.warning(f"  Download failed ({e}), falling back to random weights")
             weights = random_weights(cfg)
+        logger.info(f"  Weights loaded in {time.time() - t0:.1f}s")
 
+    # ── Model creation ──
     t0 = time.time()
     model = SmolLM2ForCausalLM(cfg, weights)
-    logger.info(f"  Model created in {time.time() - t0:.1f}s")
+    logger.info(f"  Model created in {time.time() - t0:.1f}s  (numpy prep + weight transpose)")
 
+    # ── Tokenizer ──
     try:
         tokenizer = load_tokenizer(model_variant)
     except Exception as e:
         logger.warning(f"  Tokenizer failed ({e})")
+
+    # ── Warmup ──
+    if tokenizer is not None and model is not None:
+        t0 = time.time()
+        warmup(model, tokenizer)
+        logger.info(f"  Warmup total: {time.time() - t0:.1f}s")
+    else:
+        logger.warning("  Skipping warmup (model or tokenizer not available)")
 
     logger.info(f"  Server ready on port {PORT}")
     yield
