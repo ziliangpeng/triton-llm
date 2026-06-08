@@ -8,7 +8,6 @@ import numpy as np
 
 from gpt2_triton.kernels.gemm import gemm
 from gpt2_triton.kernels.add import add
-from gpt2_triton.kernels.softmax import softmax
 
 from smollm2_triton.config import SmolLM2Config
 from smollm2_triton.kernels.rms_norm import rms_norm
@@ -231,7 +230,7 @@ class SmolLM2ForCausalLM:
 
         Supports two modes:
         - Prefill (cache is empty): process all tokens, store K/V.
-        - Decode (cache has data): process only the last token using
+        - Decode (cache has data): process a single token using
           cached K/V from previous steps.
 
         Must call ``_init_cache()`` before the first call.
@@ -249,9 +248,18 @@ class SmolLM2ForCausalLM:
         # Position offset = total tokens cached so far (sequence dim of 3D cache)
         prev_seq = self.kv_cache[0]["k"].shape[1]
         seq = token_ids.shape[1]
+
+        is_prefill = (prev_seq == 0)
+        if not is_prefill and seq > 1:
+            raise ValueError(
+                f"Decode mode requires seq=1, got seq={seq}. "
+                "Use _forward_full() for multi-token forward passes "
+                "when the cache is non-empty."
+            )
         if prev_seq + seq > config.max_position_embeddings:
             raise ValueError(
-                f"Total sequence length {prev_seq + seq} exceeds max_position_embeddings ({config.max_position_embeddings})"
+                f"Total sequence length {prev_seq + seq} exceeds "
+                f"max_position_embeddings ({config.max_position_embeddings})"
             )
 
         # --- Token embedding ---
@@ -437,10 +445,13 @@ class SmolLM2ForCausalLM:
 
     def _sample(self, logits: np.ndarray, temperature: float, top_k: int) -> int:
         """Sample next token from logits. Returns int."""
+        # Use numpy softmax on CPU — avoid GPU roundtrip for sampling
         if temperature > 1e-6:
             scaled = logits / temperature
-            probs = softmax(scaled.reshape(1, -1)).ravel().astype(np.float64)
-            probs /= probs.sum()
+            # NumPy softmax
+            logits_stable = scaled - np.max(scaled)
+            probs = np.exp(logits_stable)
+            probs = probs / np.sum(probs)
             if top_k > 0:
                 top_k = min(top_k, len(probs))
                 indices = np.argpartition(probs, -top_k)[-top_k:]
