@@ -14,6 +14,8 @@ For fast testing without real weights:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
 import os
 import sys
@@ -25,6 +27,7 @@ from pathlib import Path
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -39,6 +42,16 @@ class CompletionRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_k: int = Field(default=0, ge=0)
     seed: int | None = Field(default=None)
+    stream: bool = Field(default=False, description="SSE streaming")
+
+
+class StreamChoice(BaseModel):
+    text: str
+    finish_reason: str | None = None
+
+
+class StreamResponse(BaseModel):
+    choices: list[StreamChoice]
 
 
 class ChatMessage(BaseModel):
@@ -305,8 +318,60 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
     return new_text, new_ids, seq_len, dt
 
 
+async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
+    """Async generator that yields SSE-formatted token chunks.
+
+    Runs the full model.generate() in a thread to avoid blocking the event loop,
+    then decodes and yields each new token one by one in SSE format.
+    """
+    if model is None:
+        raise HTTPException(503, "Model not loaded")
+    if tokenizer is None:
+        raise HTTPException(503, "Tokenizer not loaded")
+
+    token_ids = encode(req_prompt)
+    seq_len = token_ids.shape[1]
+    if seq_len == 0:
+        raise HTTPException(400, "Empty prompt")
+    if seq_len + max_tokens > model.config.n_positions:
+        raise HTTPException(400,
+                            f"Sequence too long: {seq_len} prompt + {max_tokens} new = "
+                            f"{seq_len + max_tokens}, max = {model.config.n_positions}")
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    def _run():
+        return model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+
+    full_out = await asyncio.to_thread(_run)
+    new_ids = full_out[0, seq_len:].tolist()
+
+    for i, tid in enumerate(new_ids):
+        token_text = decode([tid])
+        chunk = {
+            "choices": [
+                {"text": token_text, "finish_reason": None}
+            ]
+        }
+        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+    # Final chunk with finish_reason
+    final_chunk = {
+        "choices": [
+            {"text": "", "finish_reason": "length"}
+        ]
+    }
+    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+
+
 @app.post("/v1/completions", response_model=CompletionResponse)
 async def completions(req: CompletionRequest):
+    if req.stream:
+        return StreamingResponse(
+            _stream_generate(req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
+            media_type="text/event-stream",
+        )
     new_text, new_ids, seq_len, dt = _generate(
         req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
