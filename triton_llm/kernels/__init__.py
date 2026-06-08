@@ -1,1 +1,1 @@
-"""SmolLM2 Triton kernels."""
+"""Shared Triton kernel implementations for LLM inference."""
