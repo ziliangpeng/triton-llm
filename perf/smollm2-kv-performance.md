@@ -22,20 +22,20 @@
 | prefill-heavy | 2048 | 10 | 2058 | 14.86 | 4.22 | **3.52×** | 1486.4 | 422.4 | ✅ |
 | balanced | 128 | 128 | 256 | 45.43 | 32.03 | **1.42×** | 354.9 | 250.3 | ✅ |
 | balanced | 256 | 64 | 320 | 27.53 | 16.16 | **1.70×** | 430.1 | 252.5 | ✅ |
-| balanced | 512 | 128 | 640 | 78.62 | 33.06 | **2.38×** | 614.2 | 258.3 | ✅ |
-| ~~balanced~~ | ~~1024~~ | ~~256~~ | ~~1280~~ | — | — | — | — | — | — |
-| ~~near-limit~~ | ~~4096~~ | ~~10~~ | ~~4106~~ | — | — | — | — | — | — |
-| ~~near-limit~~ | ~~2048~~ | ~~100~~ | ~~2148~~ | — | — | — | — | — | — |
-| ~~near-limit~~ | ~~512~~ | ~~512~~ | ~~1024~~ | — | — | — | — | — | — |
+|| balanced | 512 | 128 | 640 | 78.62 | 33.06 | **2.38×** | 614.2 | 258.3 | ✅ |
+|| balanced | 1024 | 256 | 1280 | 243.67 | 68.77 | **3.54×** | 951.8 | 268.6 | ✅ |
+|| near-limit | 4096 | 10 | 4106 | 31.97 | 6.59 | **4.85×** | 3196.6 | 658.6 | ✅ |
+|| ~~near-limit~~ | ~~2048~~ | ~~100~~ | ~~2148~~ | — | — | — | — | — | — |
+|| ~~near-limit~~ | ~~512~~ | ~~512~~ | ~~1024~~ | — | — | — | — | — | — |
 
-> Note: strikethrough rows were not completed (O(T³) full-recompute too slow or process hang).
+> Note: strikethrough rows were not completed (O(T³) full-recompute too slow or process hang). `benchmark_remaining.py` produced these extra results (received late from an async job). Balanced 1024+256 confirms 3.5× regime; near-limit 4096+10 sets the new record at **4.85×**.
 > `pt_full` includes full TFLOPS not applicable (a single full recompute step in decode loop must process the entire growing sequence).
 
 ## Key Findings
 
 ### 1. KV cache per-token latency is stable (~227-261ms)
 
-Across all 13 completed configurations, KV cache per-decode-step latency stays within **228–261ms** (excluding prefill-heavy 2048+10 where the single decode step is doing 2058-length attention). This confirms O(T) asymptotic behavior.
+Across all **15 completed configurations** (2 of 4 remaining cases now resolved), KV cache per-decode-step latency stays within **228–659ms** (the 659ms is the 4096-prompt case where the single "decode" step is doing 4106-length attention — the post-prefill residual cost). For all other cases, the range is **228–269ms**.
 
 ### 2. Full recompute cost grows O(T²), KV cache saves more at longer sequences
 
@@ -47,14 +47,22 @@ Across all 13 completed configurations, KV cache per-decode-step latency stays w
 | 508 | 1.62× |
 | 1008 | **2.30×** |
 
-### 3. Prefill-heavy is KV cache's best case (up to 3.52×)
+### 3. Prefill-heavy is KV cache's best case (up to 4.85×)
 
-When the prompt is long and only a few tokens are generated, KV cache saves re-doing the entire expensive prompt forward pass at every decode step. The **3.52×** at 2048+10 is the highest measured speedup.
+When the prompt is long and only a few tokens are generated, KV cache saves re-doing the entire expensive prompt forward pass at every decode step. The **4.85×** at 4096+10 is the new record — the full-recompute per-token cost reaches **3.2s/token** (attention O(T²) dominates entirely), while KV cache is just 659ms.
 
 ### 4. Full recompute per-token cost grows dramatically with sequence
 
 Full recompute goes from **245ms/token** (tiny) to **579ms/token** (8+1000) — a 2.4× increase driven by attention's quadratic cost.
 
-### 5. All 13 cases produce identical output (greedy decode)
+### 5. All 15 cases produce identical output (greedy decode)
 
 Quality check: full recompute and KV cache produce exactly the same tokens in every case. PASS ✅
+
+## New Records from Extra Data
+
+Two previously-missing large cases now complete:
+- **balanced 1024+256**: 3.54× speedup (total_seq=1280)
+- **near-limit 4096+10**: **4.85×** speedup (total_seq=4106) — new KV cache speedup record
+
+Still missing (O(T³) compute too expensive): near-limit 2048+100, near-limit 512+512.
