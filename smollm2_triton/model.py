@@ -324,6 +324,9 @@ class SmolLM2ForCausalLM:
                 cache["k"][:, prev_seq:prev_seq + seq, :] = k_3d
                 cache["v"][:, prev_seq:prev_seq + seq, :] = v_3d
                 # View of populated cache entries for attention
+                # NOTE: Slicing + reshape forces a CPU-side copy (non-contiguous after
+                # sequence-dim slice). Fixing this requires Triton GQA kernel to accept
+                # custom head strides (kv_head_stride = max_seq * d_k).
                 k_view = cache["k"][:, :total_after, :].reshape(-1, d_k)
                 v_view = cache["v"][:, :total_after, :].reshape(-1, d_k)
                 attn_out = attention_gqa(
