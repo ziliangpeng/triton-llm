@@ -450,7 +450,7 @@ class SmolLM2ForCausalLM:
             scaled = logits / temperature
             # NumPy softmax
             logits_stable = scaled - np.max(scaled)
-            probs = np.exp(logits_stable)
+            probs = np.exp(logits_stable).astype(np.float64)
             probs = probs / np.sum(probs)
             if top_k > 0:
                 top_k = min(top_k, len(probs))

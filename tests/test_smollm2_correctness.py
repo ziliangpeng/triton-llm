@@ -176,7 +176,7 @@ def main():
     cos_pass = all(s > 0.999 for s in cos_sims)
     top5_pass = top5_agree >= seq * 5 * 0.9
     max_diff_rel = max_diff / (hf_logits.max() - hf_logits.min())
-    decode_pass = True  # all decode comparisons printed above
+    decode_pass = decode_agree  # all decode comparisons tracked above
 
     print(f"  Cosine similarity (all > 0.999): {'✅' if cos_pass else '❌'}")
     print(f"  Top-5 agreement ({top5_agree}/{seq*5}): {'✅' if top5_pass else '❌'}")
