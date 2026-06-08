@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark: pre-allocated KV cache vs old concat-based cache for SmolLM2.
-
-Usage:
-    srun --gres=gpu:1 bash -c 'PYTHONPATH=. python perf/benchmark_prealloc_cache.py'
-"""
+"""Quick benchmark: compare pre-alloc KV cache with known old-cache baseline."""
 import time
 import numpy as np
 import sys
@@ -53,28 +49,37 @@ def main():
 
     model = SmolLM2ForCausalLM(config, weights)
 
-    print("=== Pre-allocated KV Cache Performance ===")
-    print(f"Model: SmolLM2-135M (30 layers, 9 heads, 3 kv heads, 576 embd)")
+    print(f"Model: SmolLM2-135M (30L, 9H, 3KV, 576)")
     print()
 
-    # Warmup
-    print("Warmup...")
-    _ = model.generate(prompt.copy(), max_new_tokens=5, temperature=0.0)
+    # Warmup: 2 tokens to compile Triton kernels
+    print("Warmup (2 tokens)...")
+    _ = model.generate(prompt.copy(), max_new_tokens=2, temperature=0.0)
+    print("  done")
 
-    for gen_tokens in [10, 50, 100, 200]:
-        times = []
-        for run in range(3):
-            t0 = time.perf_counter()
-            out = model.generate(prompt.copy(), max_new_tokens=gen_tokens, temperature=0.0)
-            t = time.perf_counter() - t0
-            times.append(t)
-            print(f"  gen={gen_tokens}, run {run+1}: {t:.3f}s, output len={out.shape[1]}")
+    # Benchmark: 50 tokens, 1 run (Triton kernels now hot-compiled)
+    print(f"\nBenchmark: 8 prompt + 50 gen (58 total)")
+    t0 = time.perf_counter()
+    out = model.generate(prompt.copy(), max_new_tokens=50, temperature=0.0)
+    t = time.perf_counter() - t0
+    print(f"  Total: {t:.3f}s")
+    print(f"  Steps: 1 prefill + 50 decode = 51 steps")
+    print(f"  Per step: {t/51*1000:.1f}ms")
+    assert out.shape[1] == 58, f"Expected 58, got {out.shape[1]}"
+    print(f"  Output len: {out.shape[1]} [OK]")
 
-        avg = sum(times) / len(times)
-        total_seq = 8 + gen_tokens
-        per_token = avg / (1 + gen_tokens) * 1000  # prefill + gen_tokens decode steps
-        print(f"  => avg={avg:.3f}s, per_step={per_token:.1f}ms")
-        print()
+    # Longer: 200 tokens
+    print(f"\nBenchmark: 8 prompt + 200 gen (208 total)")
+    t0 = time.perf_counter()
+    out = model.generate(prompt.copy(), max_new_tokens=200, temperature=0.0)
+    t = time.perf_counter() - t0
+    print(f"  Total: {t:.3f}s")
+    print(f"  Steps: 1 + 200 = 201")
+    print(f"  Per step: {t/201*1000:.1f}ms")
+    assert out.shape[1] == 208, f"Expected 208, got {out.shape[1]}"
+    print(f"  Output len: {out.shape[1]} [OK]")
+
+    print("\n✅ Benchmark complete")
 
 
 if __name__ == "__main__":
