@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Download SmolLM2 weights from HuggingFace Hub and save as .npy files.
+r"""Download SmolLM2 weights from HuggingFace Hub and save as .npy files.
 
-No PyTorch dependency — uses ``safetensors`` directly for safe tensor loading.
+Uses ``safetensors.torch`` for bfloat16-to-float32 conversion.
 
 Usage:
     python scripts/download_smollm2_weights.py [variant] [output_dir]

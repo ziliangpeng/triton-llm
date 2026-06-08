@@ -140,6 +140,7 @@ def main():
     # Decode: generate 3 more tokens, compare each step
     print("\n--- Decode Correctness (3 steps) ---")
     full_seq = tokens_np.copy()
+    decode_agree = True
     for step in range(3):
         with torch.no_grad():
             hf_out = hf_model(input_ids=torch.from_numpy(full_seq).to("cuda"))
@@ -157,7 +158,9 @@ def main():
         agree = hf_next_token == triton_next_token
 
         print(f"  Step {step+1}: abs_diff={step_diff:.4f}, cos_sim={step_cos:.6f}, "
-              f"token_agree={agree} (both={hf_next_token})")
+              f"agree={agree} (hf={hf_next_token}, triton={triton_next_token})")
+        if not agree:
+            decode_agree = False
 
         full_seq = np.concatenate(
             [full_seq, np.array([[hf_next_token]], dtype=np.int32)], axis=1
