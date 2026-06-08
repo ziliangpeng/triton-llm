@@ -56,6 +56,38 @@ class TestCompletionSchema:
         with pytest.raises(ValidationError):
             CompletionRequest(prompt="x", temperature=3.0)
 
+    def test_stream_default_false(self):
+        from scripts.serve_model import CompletionRequest
+        req = CompletionRequest(prompt="hello")
+        assert req.stream is False
+
+    def test_stream_true(self):
+        from scripts.serve_model import CompletionRequest
+        req = CompletionRequest(prompt="hello", stream=True)
+        assert req.stream is True
+
+    def test_stream_false_explicit(self):
+        from scripts.serve_model import CompletionRequest
+        req = CompletionRequest(prompt="hello", stream=False)
+        assert req.stream is False
+
+    def test_stream_response_schema(self):
+        """StreamChoice and StreamResponse should serialize correctly."""
+        from scripts.serve_model import StreamChoice, StreamResponse
+        choice = StreamChoice(text="hello", finish_reason=None)
+        resp = StreamResponse(choices=[choice])
+        d = json.loads(resp.model_dump_json())
+        assert d["choices"][0]["text"] == "hello"
+        assert d["choices"][0]["finish_reason"] is None
+
+    def test_stream_response_finish_reason(self):
+        from scripts.serve_model import StreamChoice, StreamResponse
+        choice = StreamChoice(text="", finish_reason="length")
+        resp = StreamResponse(choices=[choice])
+        d = json.loads(resp.model_dump_json())
+        assert d["choices"][0]["text"] == ""
+        assert d["choices"][0]["finish_reason"] == "length"
+
     def test_completion_response_roundtrip(self):
         from scripts.serve_model import CompletionResponse, Usage
         resp = CompletionResponse(
