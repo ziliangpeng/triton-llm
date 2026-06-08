@@ -226,6 +226,10 @@ class SmolLM2ForCausalLM:
         """
         if max_seq is None:
             max_seq = self.config.max_position_embeddings
+        elif max_seq <= 0:
+            raise ValueError(
+                f"max_seq must be a positive integer, got {max_seq}"
+            )
         n_layer = self.config.n_layer
         n_kv_head = self.config.n_kv_head
         d_k = self.config.n_embd // self.config.n_head
@@ -328,9 +332,6 @@ class SmolLM2ForCausalLM:
                     causal=False,
                 )
 
-            # Update cache length after processing this step
-            self._cache_len = total_after
-
             # Output projection — attn_out from GQA is head-major flat
             # (n_head * seq, d_k), transpose back to (seq, n_head * d_k)
             attn_out_head_major = attn_out  # (n_head * seq, d_k)
@@ -343,6 +344,9 @@ class SmolLM2ForCausalLM:
             h = rms_norm(hidden, self.ln_2_g[i], config.rms_norm_eps)
             h = self._apply_mlp(h, i)
             hidden = add(h, residual)
+
+        # Update cache length after processing this step
+        self._cache_len = total_after
 
         # --- Final RMSNorm ---
         h = rms_norm(hidden, self.ln_f_g, config.rms_norm_eps)
