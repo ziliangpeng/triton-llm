@@ -15,8 +15,9 @@ import os
 import sys
 
 import numpy as np
+import torch
 from huggingface_hub import hf_hub_download
-from safetensors import safe_open
+from safetensors.torch import load_file
 
 
 def download_weights(variant: str = "SmolLM2-135M", output_dir: str = "./weights"):
@@ -45,11 +46,11 @@ def download_weights(variant: str = "SmolLM2-135M", output_dir: str = "./weights
     for shard in shards:
         local_path = hf_hub_download(hf_name, shard)
         print(f"  Loading {shard} ...")
-        with safe_open(local_path, framework="np", device="cpu") as f:
-            for key in f.keys():
-                arr = f.get_tensor(key)
-                np.save(os.path.join(output_dir, f"{key}.npy"), arr)
-                count += 1
+        tensors = load_file(local_path, device="cpu")
+        for key, tensor in tensors.items():
+            arr = tensor.to(torch.float32).numpy()
+            np.save(os.path.join(output_dir, f"{key}.npy"), arr)
+            count += 1
 
     print(f"Downloaded {count} tensors to {output_dir}/")
 
