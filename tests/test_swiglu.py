@@ -6,7 +6,7 @@ preservation, and shape-mismatch validation.
 """
 
 import numpy as np
-from smollm2_triton.kernels.swiglu import swiglu
+from triton_llm.kernels.swiglu import swiglu
 
 
 def silu_ref(x):

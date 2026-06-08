@@ -12,7 +12,7 @@ Uses online softmax for numerical stability in a single pass over K, V.
 import triton
 import triton.language as tl
 import numpy as np
-from .. import gpu
+from triton_llm import gpu
 
 
 @triton.jit

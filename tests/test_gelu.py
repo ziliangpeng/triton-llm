@@ -8,7 +8,7 @@ at various sizes including power-of-2, non-power-of-2, and single-element.
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gpt2_triton.kernels.gelu import gelu
+from triton_llm.kernels.gelu import gelu
 
 
 def _gelu_ref_torch(x: np.ndarray) -> np.ndarray:

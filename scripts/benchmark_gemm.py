@@ -6,7 +6,7 @@ Compares Triton GEMM vs NumPy vs cuBLAS/hipBLAS (via PyTorch)
 import time
 import numpy as np
 import torch
-from gpt2_triton.kernels.gemm import gemm as triton_gemm
+from triton_llm.kernels.gemm import gemm as triton_gemm
 
 
 def benchmark(func, a, b, warmup=5, repeat=20):

@@ -6,7 +6,7 @@ sequence lengths and head dimensions, including GPT-2 typical sizes.
 """
 
 import numpy as np
-from gpt2_triton.kernels.attention import attention
+from triton_llm.kernels.attention import attention
 
 
 def _attention_ref(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:

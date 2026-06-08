@@ -5,7 +5,7 @@ a simple NumPy reference implementation.
 """
 
 import numpy as np
-from gpt2_triton.kernels.embedding import embedding
+from triton_llm.kernels.embedding import embedding
 
 
 def _ref_embedding(token_ids, weight, pos_weight):

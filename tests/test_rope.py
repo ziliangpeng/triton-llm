@@ -6,7 +6,7 @@ position offset behavior, empty input, precompute correctness, and single-row.
 """
 
 import numpy as np
-from smollm2_triton.kernels.rope import apply_rope, precompute_cos_sin
+from triton_llm.kernels.rope import apply_rope, precompute_cos_sin
 
 
 def rope_ref(x, cos, sin, seq_len, position_offset=0):

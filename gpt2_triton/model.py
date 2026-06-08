@@ -8,13 +8,13 @@ Batch=1 only.
 import numpy as np
 
 from .config import GPT2Config
-from .kernels.add import add
-from .kernels.attention import attention
-from .kernels.embedding import embedding
-from .kernels.gelu import gelu
-from .kernels.gemm import gemm
-from .kernels.layernorm import layer_norm
-from .kernels.softmax import softmax
+from triton_llm.kernels.add import add
+from triton_llm.kernels.attention import attention
+from triton_llm.kernels.embedding import embedding
+from triton_llm.kernels.gelu import gelu
+from triton_llm.kernels.gemm import gemm
+from triton_llm.kernels.layernorm import layer_norm
+from triton_llm.kernels.softmax import softmax
 
 
 class GPT2Model:
