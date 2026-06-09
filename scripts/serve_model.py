@@ -103,6 +103,9 @@ model_variant = "SmolLM2-135M"
 no_download = False
 PORT = 8000  # default, overridden by CLI args in __main__
 
+# Serialize streaming requests — batch=1 model is not thread-safe
+model_lock: asyncio.Lock | None = None
+
 
 # ── Tokenizer ─────────────────────────────────────────────────────────
 
@@ -233,7 +236,7 @@ def format_chat_prompt(messages: list[dict]) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model, tokenizer
+    global model, tokenizer, model_lock
 
     from smollm2_triton.config import SmolLM2Config
     from smollm2_triton.model import SmolLM2ForCausalLM
@@ -262,6 +265,7 @@ async def lifespan(app: FastAPI):
     t0 = time.time()
     model = SmolLM2ForCausalLM(cfg, weights)
     logger.info(f"  Model created in {time.time() - t0:.1f}s  (numpy prep + weight transpose)")
+    model_lock = asyncio.Lock()
 
     # ── Tokenizer ──
     try:
@@ -422,8 +426,15 @@ async def completions(req: CompletionRequest):
         token_ids = encode(req.prompt)
         seq_len = token_ids.shape[1]
         _validate_request(seq_len, req.max_tokens, model.config.n_positions)
+        # Serialize via model_lock to prevent concurrent KV cache corruption
+        async def _locked_stream():
+            if model_lock is None:
+                raise HTTPException(503, "Model not yet initialized")
+            async with model_lock:
+                async for chunk in _stream_generate(req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed):
+                    yield chunk
         return StreamingResponse(
-            _stream_generate(req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
+            _locked_stream(),
             media_type="text/event-stream",
         )
     new_text, new_ids, seq_len, dt = _generate(
