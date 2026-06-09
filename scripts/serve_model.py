@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -327,56 +328,86 @@ def _validate_request(seq_len, max_tokens, n_positions):
 
 
 async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
-    """Async generator that yields SSE-formatted token chunks,
-    followed by a usage stats chunk, then [DONE].
+    """Async generator that yields SSE-formatted token chunks in **real time**.
 
-    Runs the full model.generate() in a thread to avoid blocking the event loop,
-    then decodes and yields each new token one by one in SSE format.
-    Assumes validation has already been done by the route handler.
+    Runs ``model.generate_stream()`` in a background thread and bridges
+    results to the async SSE generator via an ``asyncio.Queue``, so each
+    token is sent to the client as soon as its decode step finishes.
+
+    Followed by a usage stats chunk (with TTFT, TPOT), then ``[DONE]``.
     """
     token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
-    t0 = time.time()
 
     if seed is not None:
         np.random.seed(seed)
 
+    # Queue to bridge sync generate_stream() -> async SSE
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    loop = asyncio.get_running_loop()
+
     def _run():
-        return model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+        """Runs in a background thread — consumes the sync generator."""
+        try:
+            for token_id, step_time in model.generate_stream(
+                token_ids, max_new_tokens=max_tokens,
+                temperature=temperature, top_k=top_k,
+            ):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, ("token", token_id, step_time)
+                )
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None, None))
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e), None))
+            logger.exception("generate_stream error")
 
-    full_out = await asyncio.to_thread(_run)
-    new_ids = full_out[0, seq_len:].tolist()
-    dt = round(time.time() - t0, 3)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
 
-    for i, tid in enumerate(new_ids):
-        token_text = decode([tid])
-        chunk = {
-            "choices": [
-                {"text": token_text, "finish_reason": None}
-            ]
-        }
-        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    step_times: list[float] = []
+
+    while True:
+        msg_type, payload, step_time = await queue.get()
+        if msg_type == "token":
+            token_text = decode([payload])
+            chunk = {
+                "choices": [{"text": token_text, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            step_times.append(step_time)
+        elif msg_type == "done":
+            break
+        elif msg_type == "error":
+            yield f"data: {json.dumps({'error': payload})}\n\n"
+            return
 
     # Final chunk with finish_reason
     final_chunk = {
-        "choices": [
-            {"text": "", "finish_reason": "length"}
-        ]
+        "choices": [{"text": "", "finish_reason": "length"}],
     }
     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
 
-    # Usage / performance stats chunk (choices is empty array)
+    # Usage / performance stats chunk
+    ttft = step_times[0]
+    num_decodes = len(step_times)
+    total_time = sum(step_times)
+    tpot = (sum(step_times[1:]) / max(num_decodes - 1, 1)
+            if num_decodes > 1 else 0.0)
+    tps = round(num_decodes / total_time, 1) if total_time > 0 else 0.0
+
     usage_chunk = {
         "choices": [],
         "usage": {
             "prompt_tokens": seq_len,
-            "completion_tokens": len(new_ids),
-            "total_tokens": seq_len + len(new_ids),
-            "time_seconds": dt,
+            "completion_tokens": num_decodes,
+            "total_tokens": seq_len + num_decodes,
+            "time_seconds": round(total_time, 3),
+            "ttft_ms": round(ttft * 1000, 1),
+            "tpot_ms": round(tpot * 1000, 1),
+            "tokens_per_second": tps,
         },
     }
     yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n"
-
     yield "data: [DONE]\n\n"
 
 

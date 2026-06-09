@@ -106,10 +106,22 @@ def main():
                     print(token_text, end="", flush=True)
             print()
             if usage:
-                print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
-                      f"{usage.get('completion_tokens', '?')} completion = "
-                      f"{usage.get('total_tokens', '?')} tokens "
-                      f"({usage.get('time_seconds', '?')}s)")
+                ttft = usage.get("ttft_ms")
+                tpot = usage.get("tpot_ms")
+                tps = usage.get("tokens_per_second")
+                parts = [
+                    f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+                    f"{usage.get('completion_tokens', '?')} = "
+                    f"{usage.get('total_tokens', '?')} tokens "
+                    f"({usage.get('time_seconds', '?')}s)",
+                ]
+                if ttft is not None:
+                    parts.append(f"TTFT {ttft}ms")
+                if tpot is not None:
+                    parts.append(f"TPOT {tpot}ms")
+                if tps is not None:
+                    parts.append(f"{tps} tok/s")
+                print(" | ".join(parts))
         else:
             result = query(prompt, args.max_tokens, args.temperature,
                            args.host, args.port)

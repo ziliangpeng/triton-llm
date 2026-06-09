@@ -4,6 +4,8 @@ Wires RMSNorm, RoPE, SwiGLU, and GQA attention Triton kernels into
 a complete autoregressive language model.  Batch=1 only.
 """
 
+import time
+
 import numpy as np
 
 from triton_llm.kernels.gemm import gemm
@@ -490,6 +492,86 @@ class SmolLM2ForCausalLM:
             return int(np.random.choice(len(probs), p=probs))
         else:
             return int(np.argmax(logits))
+
+    def generate_stream(
+        self,
+        token_ids: np.ndarray,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        top_k: int = 0,
+    ):
+        """Autoregressive generation yielding tokens one by one.
+
+        Like ``generate()`` but yields each newly generated token ID
+        immediately after its decode step finishes, enabling true
+        token-by-token streaming.  Yields ``(token_id, step_time_seconds)``
+        where *step_time* is the wall time of the decode step (or prefill
+        for the first token).
+
+        Parameters
+        ----------
+        token_ids : np.ndarray, shape ``(1, seq)``, int32
+            Prompt token IDs.
+        max_new_tokens : int
+            Number of tokens to generate.
+        temperature : float
+            Sampling temperature.  Values close to 0 produce greedy
+            decoding; values > 0 enable stochastic sampling.
+        top_k : int
+            If > 0, restrict sampling to the top-k most probable tokens.
+
+        Yields
+        ------
+        (token_id, step_time)
+            token_id : int
+                The newly generated token ID.
+            step_time : float
+                Wall time of the decode step that produced this token.
+        """
+        if token_ids.shape[0] != 1:
+            raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
+        if token_ids.shape[1] == 0:
+            raise ValueError("token_ids must have at least 1 token")
+        if temperature < 0.0:
+            raise ValueError("temperature must be non-negative")
+        if top_k < 0:
+            raise ValueError("top_k must be non-negative")
+        total_tokens = token_ids.shape[1] + max_new_tokens
+        if total_tokens > self.config.max_position_embeddings:
+            raise ValueError(
+                f"total tokens ({total_tokens} = {token_ids.shape[1]} prompt "
+                f"+ {max_new_tokens} new) exceeds max_position_embeddings "
+                f"({self.config.max_position_embeddings})"
+            )
+
+        self._init_cache()
+
+        # Prefill: forward with cache, stores K/V for all positions
+        t0 = time.time()
+        logits = self.forward(token_ids, use_cache=True)
+        prefill_time = time.time() - t0
+
+        # Generate loop
+        tokens = token_ids.copy()
+        for step in range(max_new_tokens):
+            t_step = time.time()
+            next_logits = logits[0, -1, :]  # (vocab_size,)
+            next_token = self._sample(next_logits, temperature, top_k)
+            tokens = np.concatenate(
+                [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+            )
+            # First token: step_time includes prefill (true TTFT).
+            # Subsequent tokens: step_time is decode-only (per-token latency).
+            if step == 0:
+                step_time = time.time() - t0
+            else:
+                step_time = time.time() - t_step
+            yield next_token, step_time
+
+            if step < max_new_tokens - 1:
+                # Single-token decode step
+                new_token_arr = np.array([[next_token]], dtype=np.int32)
+                logits = self.forward(new_token_arr, use_cache=True)
 
     def generate(
         self,
