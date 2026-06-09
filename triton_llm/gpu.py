@@ -165,14 +165,15 @@ def check_error(err):
 class DeviceTensor:
     """Wrapper for a GPU device pointer with automatic cleanup."""
 
-    def __init__(self, ptr, shape, dtype, nbytes):
+    def __init__(self, ptr, shape, dtype, nbytes, defer_free=True):
         self.ptr = ptr
         self.shape = shape
         self.dtype = dtype
         self.nbytes = nbytes
+        self._defer_free = defer_free
 
     def __del__(self):
-        if self.ptr and self.ptr.value is not None:
+        if self._defer_free and self.ptr and self.ptr.value is not None:
             try:
                 if _free is not None:
                     _free(self.ptr)
@@ -241,3 +242,34 @@ def synchronize():
     sync_fn.restype = ctypes.c_int
     err = sync_fn()
     check_error(err)
+
+
+def view(tensor: DeviceTensor, new_shape: tuple) -> DeviceTensor:
+    """Return a zero-copy view of ``tensor`` with a new shape.
+
+    Same device pointer, same memory, different shape tuple.  The new
+    shape must have the same total number of elements as the original.
+    The returned tensor does NOT own the GPU memory — freeing is
+    deferred to the original tensor.
+
+    Parameters
+    ----------
+    tensor : DeviceTensor
+        Source tensor whose GPU memory is reused.
+    new_shape : tuple of int
+        New shape (same total element count).
+
+    Returns
+    -------
+    DeviceTensor
+        A view with the same pointer and ``nbytes`` but shape ``new_shape``.
+        ``defer_free=False`` so the original tensor is responsible for freeing.
+    """
+    n_elems = int(np.prod(tensor.shape))
+    n_new = int(np.prod(new_shape))
+    if n_elems != n_new:
+        raise ValueError(
+            f"Cannot view {tensor.shape} ({n_elems} elements) as "
+            f"{new_shape} ({n_new} elements) — element count mismatch"
+        )
+    return DeviceTensor(tensor.ptr, new_shape, tensor.dtype, tensor.nbytes, defer_free=False)
