@@ -15,12 +15,6 @@ from triton_llm.kernels.rms_norm import rms_norm, rms_norm_device
 from triton_llm.kernels.rope import precompute_cos_sin, precompute_cos_sin_device, apply_rope, apply_rope_device
 from triton_llm.kernels.swiglu import swiglu, swiglu_device
 from triton_llm.kernels.attention_gqa import attention_gqa, attention_gqa_device
-from triton_llm.kernels.transpose_2d import (
-    to_head_major_dev,
-    to_seq_major_dev,
-    flat_to_cache_dev,
-    cache_to_flat_dev,
-)
 
 from smollm2_triton.config import SmolLM2Config
 
@@ -418,14 +412,16 @@ class SmolLM2ForCausalLM:
         return logits.reshape(1, seq, config.vocab_size)
 
     # ------------------------------------------------------------------
-    # GPU-resident forward pass (Phase 1 + Phase 2)
+    # GPU-resident forward pass (Phase 1: EC32)
     # ------------------------------------------------------------------
 
     def _init_cache_gpu(self, max_seq: int | None = None):
-        """Initialise pre-allocated KV cache for GPU-resident path (Phase 2).
+        """Initialise pre-allocated KV cache for GPU-resident path (Phase 1).
 
-        Allocates DeviceTensors for KV cache storage on GPU, removing all
-        CPU round-trips for cache read/write.
+        Allocates host-side numpy arrays for KV cache storage. In Phase 1,
+        cache read/write goes through CPU (numpy) due to reshape/transpose
+        constraints. Phase 2 will move the KV cache to GPU-resident
+        DeviceTensors to eliminate the round-trips.
 
         Parameters
         ----------
@@ -448,25 +444,24 @@ class SmolLM2ForCausalLM:
         n_kv_head = self.config.n_kv_head
         d_k = self.config.n_embd // self.config.n_head
         self._cache_len = 0
-        self._cache_max_seq = max_seq
-        # Allocate zero-initialized GPU DeviceTensors (one-time copy at init)
-        cache_np = np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32)
         self.kv_cache_dev = [
             {
-                "k": gpu.to_device(cache_np.copy()),
-                "v": gpu.to_device(cache_np.copy()),
+                "k": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
+                "v": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
             }
             for _ in range(n_layer)
         ]
 
     def _forward_cached_gpu(self, token_ids: np.ndarray) -> np.ndarray:
-        """GPU-resident incremental forward pass using GPU KV cache (Phase 2).
+        """GPU-resident incremental forward pass using KV cache.
 
-        Fully GPU-resident: no to_host/to_device calls in the layer loop.
-        Transpose and KV cache operations are done entirely on GPU via
-        dedicated Triton kernels.
+        Keeps hidden state and most intermediate tensors on GPU.
+        KV cache read/write goes through CPU (numpy) due to reshape/transpose
+        constraints. Only one ``synchronize()`` and one ``to_host()`` at the end.
 
-        Only one ``synchronize()`` and one ``to_host()`` at the end.
+        NOTE: For Phase 1, the reshape + transpose (seq,n_head*d_k <-> n_head*seq,d_k)
+        is done on CPU. Phase 2 will add GPU transpose kernels to eliminate these
+        round-trips.
         """
         config = self.config
         n_layer = config.n_layer
@@ -489,7 +484,7 @@ class SmolLM2ForCausalLM:
                 f"Decode mode requires seq=1, got seq={seq}. "
             )
         total_after = prev_seq + seq
-        max_seq = self._cache_max_seq if hasattr(self, '_cache_max_seq') else self.kv_cache_dev[0]["k"].shape[1]
+        max_seq = self.kv_cache_dev[0]["k"].shape[1]
         if total_after > max_seq:
             raise ValueError(
                 f"Total sequence length {total_after} exceeds "
@@ -515,43 +510,61 @@ class SmolLM2ForCausalLM:
             k_dev = gemm_device(ln_out_dev, self.k_proj_w_dev[i])  # (seq, n_kv_head * d_k)
             v_dev = gemm_device(ln_out_dev, self.v_proj_w_dev[i])  # (seq, n_kv_head * d_k)
 
-            # GPU transpose: (seq, n_heads*d_k) -> (n_heads*seq, d_k)
-            q_hm = to_head_major_dev(q_dev, n_head, seq, d_k)
-            k_hm = to_head_major_dev(k_dev, n_kv_head, seq, d_k)
-            v_hm = to_head_major_dev(v_dev, n_kv_head, seq, d_k)
+            # --- Reshape + transpose: (seq, n_heads*d_k) -> (n_heads*seq, d_k) ---
+            # Done on CPU since DeviceTensor doesn't support reshape/transpose
+            q_np = gpu.to_host(q_dev)
+            k_np = gpu.to_host(k_dev)
+            v_np = gpu.to_host(v_dev)
 
-            # Apply RoPE on GPU (in-place on q_hm and k_hm)
-            apply_rope_device(q_hm, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
-            apply_rope_device(k_hm, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
+            q_flat = q_np.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            k_flat = k_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            v_flat = v_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+
+            # Copy back to GPU
+            q_dev = gpu.to_device(q_flat)
+            k_dev = gpu.to_device(k_flat)
+            v_dev = gpu.to_device(v_flat)
+
+            # Apply RoPE on GPU (in-place on q_dev and k_dev)
+            apply_rope_device(q_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
+            apply_rope_device(k_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
 
             if is_prefill:
-                # GPU cache write: directly into DeviceTensor cache
-                flat_to_cache_dev(k_hm, cache["k"], n_kv_head, seq, d_k, max_seq, 0)
-                flat_to_cache_dev(v_hm, cache["v"], n_kv_head, seq, d_k, max_seq, 0)
+                # Prefill: store K, V into numpy cache
+                k_np_cache = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
+                v_np_cache = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
+                cache["k"][:, :seq, :] = k_np_cache
+                cache["v"][:, :seq, :] = v_np_cache
 
                 attn_dev = attention_gqa_device(
-                    q_hm, k_hm, v_hm, n_head, n_kv_head, causal=True
+                    q_dev, k_dev, v_dev, n_head, n_kv_head, causal=True
                 )
             else:
-                # GPU cache write at position prev_seq
-                flat_to_cache_dev(k_hm, cache["k"], n_kv_head, seq, d_k, max_seq, prev_seq)
-                flat_to_cache_dev(v_hm, cache["v"], n_kv_head, seq, d_k, max_seq, prev_seq)
+                # Decode: write new K, V into numpy cache
+                k_slice = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
+                v_slice = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
+                cache["k"][:, prev_seq:prev_seq + seq, :] = k_slice
+                cache["v"][:, prev_seq:prev_seq + seq, :] = v_slice
 
-                # GPU cache read: populate cache slice as head-major flat
-                k_view = cache_to_flat_dev(cache["k"], n_kv_head, total_after, d_k, max_seq)
-                v_view = cache_to_flat_dev(cache["v"], n_kv_head, total_after, d_k, max_seq)
+                # Create device tensors for the populated cache slice
+                k_view_np = cache["k"][:, :total_after, :].reshape(-1, d_k)
+                v_view_np = cache["v"][:, :total_after, :].reshape(-1, d_k)
+                k_view_dev = gpu.to_device(k_view_np)
+                v_view_dev = gpu.to_device(v_view_np)
 
                 attn_dev = attention_gqa_device(
-                    q_hm, k_view, v_view,
+                    q_dev, k_view_dev, v_view_dev,
                     n_head, n_kv_head,
                     causal=False,
                 )
 
-            # GPU transpose back: (n_head*seq, d_k) -> (seq, n_head*d_k)
-            attn_sm = to_seq_major_dev(attn_dev, n_head, seq, d_k)
+            # Transpose attention output back: (n_head*seq, d_k) -> (seq, n_head*d_k)
+            attn_np = gpu.to_host(attn_dev)
+            attn_seq_major = attn_np.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k)
+            attn_dev = gpu.to_device(attn_seq_major)
 
             # Output projection + residual on GPU
-            o_dev = gemm_device(attn_sm, self.o_proj_w_dev[i])  # (seq, n_embd)
+            o_dev = gemm_device(attn_dev, self.o_proj_w_dev[i])  # (seq, n_embd)
             h_dev = gpu.allocate((seq, n_embd), np.float32)
             add_device(o_dev, residual_dev, out_dev=h_dev)
 
