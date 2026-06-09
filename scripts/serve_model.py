@@ -327,7 +327,8 @@ def _validate_request(seq_len, max_tokens, n_positions):
 
 
 async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
-    """Async generator that yields SSE-formatted token chunks.
+    """Async generator that yields SSE-formatted token chunks,
+    followed by a usage stats chunk, then [DONE].
 
     Runs the full model.generate() in a thread to avoid blocking the event loop,
     then decodes and yields each new token one by one in SSE format.
@@ -335,6 +336,7 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     """
     token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
+    t0 = time.time()
 
     if seed is not None:
         np.random.seed(seed)
@@ -344,6 +346,7 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
 
     full_out = await asyncio.to_thread(_run)
     new_ids = full_out[0, seq_len:].tolist()
+    dt = round(time.time() - t0, 3)
 
     for i, tid in enumerate(new_ids):
         token_text = decode([tid])
@@ -361,6 +364,19 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
         ]
     }
     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+
+    # Usage / performance stats chunk (choices is empty array)
+    usage_chunk = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": seq_len,
+            "completion_tokens": len(new_ids),
+            "total_tokens": seq_len + len(new_ids),
+            "time_seconds": dt,
+        },
+    }
+    yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n"
+
     yield "data: [DONE]\n\n"
 
 

@@ -71,9 +71,12 @@ def query_completions(prompt: str, max_tokens: int = 50, temperature: float = 0.
 def query_completions_stream(prompt: str, max_tokens: int = 50, temperature: float = 0.0,
                              top_k: int = 0, seed: int | None = None,
                              host: str = "localhost", port: int = 8000):
-    """Send a streaming /v1/completions request, yield token texts as they arrive.
+    """Send a streaming /v1/completions request, yield tokens and usage.
 
-    Yields (token_text, is_last) tuples.
+    Yields (token_text, is_last, usage_dict) triples.
+    usage_dict is None for regular token chunks, and a dict with
+    prompt_tokens/completion_tokens/total_tokens/time_seconds for
+    the final usage chunk.
     """
     body = {
         "prompt": prompt,
@@ -95,23 +98,32 @@ def query_completions_stream(prompt: str, max_tokens: int = 50, temperature: flo
         with urllib.request.urlopen(req, timeout=120) as resp:
             yield from parse_sse_lines(resp)
     except urllib.error.HTTPError as e:
-        yield f"[HTTP {e.code}] {e.read().decode()}", True
+        yield f"[HTTP {e.code}] {e.read().decode()}", True, None
     except urllib.error.URLError as e:
-        yield f"[Connection failed] {e.reason}", True
+        yield f"[Connection failed] {e.reason}", True, None
 
 
 def _run_stream_completion(args):
-    """Run a streaming completion, printing tokens as they arrive."""
+    """Run a streaming completion, printing tokens as they arrive and usage at the end."""
     print(f"Prompt: {args.prompt}")
     print("Streaming: ", end="", flush=True)
-    for token_text, is_last in query_completions_stream(
+    usage = None
+    for token_text, is_last, chunk_usage in query_completions_stream(
         args.prompt, args.max_tokens, args.temperature,
         args.top_k, args.seed, args.host, args.port,
     ):
-        if is_last and not token_text:
+        if chunk_usage is not None:
+            usage = chunk_usage
+        elif is_last and not token_text:
             break
-        print(token_text, end="", flush=True)
+        else:
+            print(token_text, end="", flush=True)
     print()
+    if usage:
+        print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+              f"{usage.get('completion_tokens', '?')} completion = "
+              f"{usage.get('total_tokens', '?')} tokens "
+              f"({usage.get('time_seconds', '?')}s)")
     return 0
 
 

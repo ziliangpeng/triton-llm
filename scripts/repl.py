@@ -46,7 +46,10 @@ def query(prompt: str, max_tokens: int, temperature: float,
 
 def query_stream(prompt: str, max_tokens: int, temperature: float,
                  host: str, port: int):
-    """Send streaming /v1/completions, yield token texts as they arrive."""
+    """Send streaming /v1/completions, yield tokens and usage.
+
+    Yields (token_text, is_last, usage_dict) triples.
+    """
     body = json.dumps({
         "prompt": prompt,
         "max_tokens": max_tokens,
@@ -63,9 +66,9 @@ def query_stream(prompt: str, max_tokens: int, temperature: float,
         with urllib.request.urlopen(req, timeout=120) as resp:
             yield from parse_sse_lines(resp)
     except urllib.error.HTTPError as e:
-        yield f"[HTTP {e.code}] {e.read().decode()}", True
+        yield f"[HTTP {e.code}] {e.read().decode()}", True, None
     except urllib.error.URLError as e:
-        yield f"[Connection failed] {e.reason}", True
+        yield f"[Connection failed] {e.reason}", True, None
 
 
 def main():
@@ -92,13 +95,22 @@ def main():
             continue
 
         if args.stream:
-            for token_text, is_last in query_stream(
+            usage = None
+            for token_text, is_last, chunk_usage in query_stream(
                 prompt, args.max_tokens, args.temperature, args.host, args.port,
             ):
-                if is_last and not token_text:
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                elif is_last and not token_text:
                     break
-                print(token_text, end="", flush=True)
+                else:
+                    print(token_text, end="", flush=True)
             print()
+            if usage:
+                print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+                      f"{usage.get('completion_tokens', '?')} completion = "
+                      f"{usage.get('total_tokens', '?')} tokens "
+                      f"({usage.get('time_seconds', '?')}s)")
         else:
             result = query(prompt, args.max_tokens, args.temperature,
                            args.host, args.port)
