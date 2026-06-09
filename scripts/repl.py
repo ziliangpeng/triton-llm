@@ -12,6 +12,9 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts._stream_utils import parse_sse_lines
 
