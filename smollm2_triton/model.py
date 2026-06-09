@@ -8,12 +8,13 @@ import time
 
 import numpy as np
 
-from triton_llm.kernels.gemm import gemm
-from triton_llm.kernels.add import add
-from triton_llm.kernels.rms_norm import rms_norm
-from triton_llm.kernels.rope import precompute_cos_sin, apply_rope
-from triton_llm.kernels.swiglu import swiglu
-from triton_llm.kernels.attention_gqa import attention_gqa
+from triton_llm import gpu
+from triton_llm.kernels.gemm import gemm, gemm_device
+from triton_llm.kernels.add import add, add_device
+from triton_llm.kernels.rms_norm import rms_norm, rms_norm_device
+from triton_llm.kernels.rope import precompute_cos_sin, precompute_cos_sin_device, apply_rope, apply_rope_device
+from triton_llm.kernels.swiglu import swiglu, swiglu_device
+from triton_llm.kernels.attention_gqa import attention_gqa, attention_gqa_device
 
 from smollm2_triton.config import SmolLM2Config
 
@@ -143,6 +144,38 @@ class SmolLM2ForCausalLM:
                     requirements=["C_CONTIGUOUS"],
                 )
             )
+
+        # --- GPU-resident weight storage (Phase 1: EC32) ---
+        # Keep CPU versions for backward compatibility; add DeviceTensor copies.
+        self.q_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.k_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.v_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.o_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.gate_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.up_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.down_proj_w_dev: list[gpu.DeviceTensor] = []
+        self.ln_1_w_dev: list[gpu.DeviceTensor] = []
+        self.ln_2_w_dev: list[gpu.DeviceTensor] = []
+
+        for i in range(n_layer):
+            self.q_proj_w_dev.append(gpu.to_device(self.q_proj_w[i]))
+            self.k_proj_w_dev.append(gpu.to_device(self.k_proj_w[i]))
+            self.v_proj_w_dev.append(gpu.to_device(self.v_proj_w[i]))
+            self.o_proj_w_dev.append(gpu.to_device(self.o_proj_w[i]))
+            self.gate_proj_w_dev.append(gpu.to_device(self.gate_proj_w[i]))
+            self.up_proj_w_dev.append(gpu.to_device(self.up_proj_w[i]))
+            self.down_proj_w_dev.append(gpu.to_device(self.down_proj_w[i]))
+            self.ln_1_w_dev.append(gpu.to_device(self.ln_1_g[i]))
+            self.ln_2_w_dev.append(gpu.to_device(self.ln_2_g[i]))
+
+        # GPU-resident RMSNorm final weight
+        self.ln_f_w_dev = gpu.to_device(self.ln_f_g)
+        # GPU-resident LM head weight
+        self.lm_head_w_dev = gpu.to_device(self.lm_head_w)
+        # GPU-resident RoPE cos/sin tables
+        self.cos_dev, self.sin_dev = precompute_cos_sin_device(
+            config.max_position_embeddings, d_k, theta=config.rope_theta
+        )
 
     # ------------------------------------------------------------------
     # Forward
@@ -366,8 +399,253 @@ class SmolLM2ForCausalLM:
         return logits.reshape(1, seq, config.vocab_size)
 
     # ------------------------------------------------------------------
-    # Attention sub-block
+    # GPU-resident forward pass (Phase 1: EC32)
     # ------------------------------------------------------------------
+
+    def _init_cache_gpu(self, max_seq: int | None = None):
+        """Initialise pre-allocated KV cache for GPU-resident path.
+
+        Allocates host-side numpy arrays (same as CPU path) and GPU-side
+        DeviceTensors for the full pre-allocated buffers.
+        """
+        if max_seq is None:
+            max_seq = self.config.max_position_embeddings
+        elif max_seq <= 0:
+            raise ValueError(
+                f"max_seq must be a positive integer, got {max_seq}"
+            )
+        elif max_seq > self.config.max_position_embeddings:
+            raise ValueError(
+                f"max_seq ({max_seq}) cannot exceed model's "
+                f"max_position_embeddings ({self.config.max_position_embeddings})"
+            )
+        n_layer = self.config.n_layer
+        n_kv_head = self.config.n_kv_head
+        d_k = self.config.n_embd // self.config.n_head
+        self._cache_len = 0
+        self.kv_cache_dev = [
+            {
+                "k": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
+                "v": np.zeros((n_kv_head, max_seq, d_k), dtype=np.float32),
+            }
+            for _ in range(n_layer)
+        ]
+
+    def _forward_cached_gpu(self, token_ids: np.ndarray) -> np.ndarray:
+        """GPU-resident incremental forward pass using KV cache.
+
+        Keeps hidden state and most intermediate tensors on GPU.
+        KV cache read/write goes through CPU (numpy) due to reshape/transpose
+        constraints. Only one ``synchronize()`` and one ``to_host()`` at the end.
+
+        NOTE: For Phase 1, the reshape + transpose (seq,n_head*d_k <-> n_head*seq,d_k)
+        is done on CPU. Phase 2 will add GPU transpose kernels to eliminate these
+        round-trips.
+        """
+        config = self.config
+        n_layer = config.n_layer
+        n_embd = config.n_embd
+        n_head = config.n_head
+        n_kv_head = config.n_kv_head
+        d_k = n_embd // n_head
+
+        if not hasattr(self, "kv_cache_dev") or self.kv_cache_dev is None:
+            raise RuntimeError("_init_cache_gpu() must be called before _forward_cached_gpu()")
+
+        prev_seq = self._cache_len
+        seq = token_ids.shape[1]
+
+        is_prefill = (prev_seq == 0)
+        if not is_prefill and seq > 1:
+            raise ValueError(
+                f"Decode mode requires seq=1, got seq={seq}. "
+            )
+        total_after = prev_seq + seq
+
+        # --- Token embedding on CPU, then copy to GPU once ---
+        hidden = self._embed(token_ids)  # (1, seq, n_embd) on CPU
+        h_dev = gpu.to_device(hidden.reshape(-1, n_embd).copy())  # (seq, n_embd) on GPU
+
+        for i in range(n_layer):
+            cache = self.kv_cache_dev[i]
+
+            # --- Attention sub-block ---
+            residual_dev = h_dev
+
+            # RMSNorm
+            ln_out_dev = gpu.allocate((seq, n_embd), np.float32)
+            rms_norm_device(h_dev, self.ln_1_w_dev[i], ln_out_dev, config.rms_norm_eps)
+
+            # QKV projections on GPU
+            q_dev = gemm_device(ln_out_dev, self.q_proj_w_dev[i])  # (seq, n_head * d_k)
+            k_dev = gemm_device(ln_out_dev, self.k_proj_w_dev[i])  # (seq, n_kv_head * d_k)
+            v_dev = gemm_device(ln_out_dev, self.v_proj_w_dev[i])  # (seq, n_kv_head * d_k)
+
+            # --- Reshape + transpose: (seq, n_heads*d_k) -> (n_heads*seq, d_k) ---
+            # Done on CPU since DeviceTensor doesn't support reshape/transpose
+            q_np = gpu.to_host(q_dev)
+            k_np = gpu.to_host(k_dev)
+            v_np = gpu.to_host(v_dev)
+
+            q_flat = q_np.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            k_flat = k_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+            v_flat = v_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+
+            # Copy back to GPU
+            q_dev = gpu.to_device(q_flat)
+            k_dev = gpu.to_device(k_flat)
+            v_dev = gpu.to_device(v_flat)
+
+            # Apply RoPE on GPU (in-place on q_dev and k_dev)
+            apply_rope_device(q_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
+            apply_rope_device(k_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
+
+            if is_prefill:
+                # Prefill: store K, V into numpy cache
+                k_np_cache = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
+                v_np_cache = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
+                cache["k"][:, :seq, :] = k_np_cache
+                cache["v"][:, :seq, :] = v_np_cache
+
+                attn_dev = attention_gqa_device(
+                    q_dev, k_dev, v_dev, n_head, n_kv_head, causal=True
+                )
+            else:
+                # Decode: write new K, V into numpy cache
+                k_slice = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
+                v_slice = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
+                cache["k"][:, prev_seq:prev_seq + seq, :] = k_slice
+                cache["v"][:, prev_seq:prev_seq + seq, :] = v_slice
+
+                # Create device tensors for the populated cache slice
+                k_view_np = cache["k"][:, :total_after, :].reshape(-1, d_k)
+                v_view_np = cache["v"][:, :total_after, :].reshape(-1, d_k)
+                k_view_dev = gpu.to_device(k_view_np)
+                v_view_dev = gpu.to_device(v_view_np)
+
+                attn_dev = attention_gqa_device(
+                    q_dev, k_view_dev, v_view_dev,
+                    n_head, n_kv_head,
+                    causal=False,
+                )
+
+            # Transpose attention output back: (n_head*seq, d_k) -> (seq, n_head*d_k)
+            attn_np = gpu.to_host(attn_dev)
+            attn_seq_major = attn_np.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k)
+            attn_dev = gpu.to_device(attn_seq_major)
+
+            # Output projection + residual on GPU
+            o_dev = gemm_device(attn_dev, self.o_proj_w_dev[i])  # (seq, n_embd)
+            h_dev = gpu.allocate((seq, n_embd), np.float32)
+            add_device(o_dev, residual_dev, out_dev=h_dev)
+
+            # --- MLP sub-block ---
+            residual_dev = h_dev
+            ln_out_dev = gpu.allocate((seq, n_embd), np.float32)
+            rms_norm_device(h_dev, self.ln_2_w_dev[i], ln_out_dev, config.rms_norm_eps)
+
+            gate_dev = gemm_device(ln_out_dev, self.gate_proj_w_dev[i])  # (seq, intermediate_size)
+            up_dev = gemm_device(ln_out_dev, self.up_proj_w_dev[i])      # (seq, intermediate_size)
+            act_dev = swiglu_device(gate_dev, up_dev)                     # (seq, intermediate_size)
+            down_dev = gemm_device(act_dev, self.down_proj_w_dev[i])      # (seq, n_embd)
+            h_dev = gpu.allocate((seq, n_embd), np.float32)
+            add_device(down_dev, residual_dev, out_dev=h_dev)
+
+        # Update cache length after processing this step
+        self._cache_len = total_after
+
+        # --- Final RMSNorm on GPU ---
+        ln_out_dev = gpu.allocate((seq, n_embd), np.float32)
+        rms_norm_device(h_dev, self.ln_f_w_dev, ln_out_dev, config.rms_norm_eps)
+
+        # --- LM head on GPU ---
+        logits_dev = gemm_device(ln_out_dev, self.lm_head_w_dev)  # (seq, vocab_size)
+
+        # Single sync + to_host at the very end
+        gpu.synchronize()
+        return gpu.to_host(logits_dev).reshape(1, seq, config.vocab_size)
+
+    def forward_gpu(self, token_ids: np.ndarray, use_cache: bool = False) -> np.ndarray:
+        """GPU-resident forward pass (dispatches to GPU cached path if cache is initialized).
+
+        Parameters
+        ----------
+        token_ids : np.ndarray, shape ``(1, seq)``, int32
+        use_cache : bool
+            If True, use GPU KV cache. ``_init_cache_gpu()`` must have been called.
+
+        Returns
+        -------
+        logits : np.ndarray, shape ``(1, seq, vocab_size)``, float32
+        """
+        if token_ids.ndim != 2 or token_ids.shape[0] != 1 or token_ids.shape[1] == 0:
+            raise ValueError(
+                f"token_ids must be a non-empty 2D array with shape (1, seq), "
+                f"got shape {token_ids.shape}"
+            )
+        if use_cache:
+            return self._forward_cached_gpu(token_ids)
+        return self._forward_full(token_ids)  # Falls back to CPU path for non-cached
+
+    def generate_gpu(
+        self,
+        token_ids: np.ndarray,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        top_k: int = 0,
+    ) -> np.ndarray:
+        """GPU-resident autoregressive generation.
+
+        Uses GPU KV cache and GPU-resident forward pass for the entire
+        prefill + decode loop. Only syncs once per forward call.
+
+        Parameters
+        ----------
+        token_ids : np.ndarray, shape ``(1, seq)``, int32
+            Prompt token IDs.
+        max_new_tokens : int
+            Number of tokens to generate.
+        temperature : float
+            Sampling temperature. 0 = greedy.
+        top_k : int
+            If > 0, restrict sampling to the top-k most probable tokens.
+
+        Returns
+        -------
+        tokens : np.ndarray, shape ``(1, seq + max_new_tokens)``, int32
+        """
+        if token_ids.shape[0] != 1:
+            raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
+        if token_ids.shape[1] == 0:
+            raise ValueError("token_ids must have at least 1 token")
+        if temperature < 0.0:
+            raise ValueError("temperature must be non-negative")
+        if top_k < 0:
+            raise ValueError("top_k must be non-negative")
+        total_tokens = token_ids.shape[1] + max_new_tokens
+        if total_tokens > self.config.max_position_embeddings:
+            raise ValueError(
+                f"total tokens ({total_tokens} = {token_ids.shape[1]} prompt "
+                f"+ {max_new_tokens} new) exceeds max_position_embeddings "
+                f"({self.config.max_position_embeddings})"
+            )
+
+        self._init_cache_gpu()
+
+        # Prefill
+        logits = self._forward_cached_gpu(token_ids)
+
+        tokens = token_ids.copy()
+        for step in range(max_new_tokens):
+            next_logits = logits[0, -1, :]
+            next_token = self._sample(next_logits, temperature, top_k)
+            tokens = np.concatenate(
+                [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
+            )
+            if step < max_new_tokens - 1:
+                new_token_arr = np.array([[next_token]], dtype=np.int32)
+                logits = self._forward_cached_gpu(new_token_arr)
+        return tokens
 
     def _apply_attention(
         self, h_2d: np.ndarray, layer_idx: int, prev_seq: int = 0

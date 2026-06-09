@@ -112,3 +112,53 @@ def swiglu(gate: np.ndarray, up: np.ndarray) -> np.ndarray:
 
     gpu.synchronize()
     return gpu.to_host(out_dev).reshape(orig_shape)
+
+
+def swiglu_device(
+    gate_dev: "gpu.DeviceTensor",
+    up_dev: "gpu.DeviceTensor",
+    out_dev: "gpu.DeviceTensor | None" = None,
+) -> "gpu.DeviceTensor":
+    """GPU-resident SwiGLU activation. No sync, no host copies.
+
+    Parameters
+    ----------
+    gate_dev : DeviceTensor, any shape, float32
+        Gate tensor on GPU.
+    up_dev : DeviceTensor, same shape as gate_dev, float32
+        Up tensor on GPU.
+    out_dev : DeviceTensor, optional
+        Pre-allocated output. Auto-allocated if None.
+
+    Returns
+    -------
+    out_dev : DeviceTensor, same shape as inputs, float32
+    """
+    if gate_dev.shape != up_dev.shape:
+        raise ValueError(
+            f"gate_dev shape {gate_dev.shape} does not match up_dev shape {up_dev.shape}"
+        )
+
+    # Total number of elements
+    N = int(np.prod(gate_dev.shape))
+
+    if N == 0:
+        if out_dev is None:
+            out_dev = gpu.allocate(gate_dev.shape, np.float32)
+        return out_dev
+
+    if out_dev is None:
+        out_dev = gpu.allocate(gate_dev.shape, np.float32)
+
+    BLOCK_SIZE = min(_next_pow2(N), 1024)
+    grid = (triton.cdiv(N, BLOCK_SIZE),)
+
+    _swiglu_kernel[grid](
+        gate_dev.data_ptr(),
+        up_dev.data_ptr(),
+        out_dev.data_ptr(),
+        N,
+        BLOCK_SIZE,
+    )
+
+    return out_dev

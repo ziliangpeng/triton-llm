@@ -100,3 +100,60 @@ def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
     gpu.synchronize()
     return gpu.to_host(c_dev)
+
+
+def gemm_device(
+    h_dev: "gpu.DeviceTensor",
+    w_dev: "gpu.DeviceTensor",
+    out_dev: "gpu.DeviceTensor | None" = None,
+) -> "gpu.DeviceTensor":
+    """GPU-resident GEMM. No sync, no host copies.
+
+    Parameters
+    ----------
+    h_dev : DeviceTensor, shape (M, K), float32
+        Hidden states on GPU.
+    w_dev : DeviceTensor, shape (K, N), float32
+        Weight matrix on GPU.
+    out_dev : DeviceTensor, shape (M, N), float32, optional
+        Pre-allocated output. Auto-allocated if None.
+
+    Returns
+    -------
+    out_dev : DeviceTensor, shape (M, N), float32
+        Product on GPU.
+    """
+    M, K = h_dev.shape
+    K2, N = w_dev.shape
+    assert K == K2, f"gemm_device shape mismatch: ({M},{K}) x ({K2},{N})"
+
+    # Handle zero-dimension edge cases
+    if K == 0 or M == 0 or N == 0:
+        if out_dev is None:
+            out_dev = gpu.allocate((M, N), np.float32)
+        return out_dev
+
+    if out_dev is None:
+        out_dev = gpu.allocate((M, N), np.float32)
+
+    # Contiguous strides in elements
+    stride_hm, stride_hk = K, 1
+    stride_wk, stride_wn = N, 1
+    stride_cm, stride_cn = N, 1
+
+    BLOCK_M = 64
+    BLOCK_N = 64
+    BLOCK_K = 32
+
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
+
+    _gemm_kernel[grid](
+        h_dev.data_ptr(), w_dev.data_ptr(), out_dev.data_ptr(),
+        M, N, K,
+        stride_hm, stride_hk,
+        stride_wk, stride_wn,
+        stride_cm, stride_cn,
+        BLOCK_M, BLOCK_N, BLOCK_K,
+    )
+
+    return out_dev

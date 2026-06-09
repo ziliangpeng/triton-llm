@@ -333,6 +333,46 @@ def test_model_rejects_empty_input():
     return True
 
 
+def test_gpu_resident_full_trip():
+    """GPU-resident generate produces identical tokens to CPU generate (greedy)."""
+    print("\n=== test_gpu_resident_full_trip ===")
+    config = SmolLM2Config(
+        vocab_size=100,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+        max_position_embeddings=512,
+    )
+    np.random.seed(42)
+    weights = _make_random_weights(config)
+
+    # GPU path
+    model_gpu = SmolLM2ForCausalLM(config, weights)
+    prompt = np.array([[5, 12, 7]], dtype=np.int32)
+    try:
+        out_gpu = model_gpu.generate_gpu(prompt, max_new_tokens=5, temperature=0.0)
+    except RuntimeError as e:
+        if "No supported GPU runtime found" in str(e):
+            print("  SKIP: No GPU available  [SKIP]")
+            return True  # Not a failure in CI without GPU
+        raise
+
+    # CPU path (deterministic with same seed)
+    np.random.seed(42)
+    model_cpu = SmolLM2ForCausalLM(config, weights)
+    out_cpu = model_cpu.generate(prompt, max_new_tokens=5, temperature=0.0)
+
+    np.testing.assert_array_equal(
+        out_gpu, out_cpu,
+        err_msg="GPU-resident generate must match CPU generate token-by-token",
+    )
+    print(f"  GPU output:  {out_gpu.tolist()}")
+    print(f"  CPU output:  {out_cpu.tolist()}  [PASS]")
+    return True
+
+
 if __name__ == "__main__":
     print("Running SmolLM2 Model integration tests...")
     results = [
@@ -345,6 +385,7 @@ if __name__ == "__main__":
         ("test_model_prealloc_cache_full_trip", test_model_prealloc_cache_full_trip()),
         ("test_init_cache_rejects_invalid_max_seq", test_init_cache_rejects_invalid_max_seq()),
         ("test_model_rejects_empty_input", test_model_rejects_empty_input()),
+        ("test_gpu_resident_full_trip", test_gpu_resident_full_trip()),
     ]
     print("\n" + "=" * 50)
     all_pass = True
