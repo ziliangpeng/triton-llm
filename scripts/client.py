@@ -33,12 +33,17 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts._stream_utils import parse_sse_lines
 
 
 def query_completions(prompt: str, max_tokens: int = 50, temperature: float = 0.0,
                       top_k: int = 0, seed: int | None = None,
                       host: str = "localhost", port: int = 8000) -> dict:
-    """Send a /v1/completions request."""
+    """Send a /v1/completions request (non-streaming)."""
     body = {
         "prompt": prompt,
         "max_tokens": max_tokens,
@@ -61,6 +66,53 @@ def query_completions(prompt: str, max_tokens: int = 50, temperature: float = 0.
         return {"error": f"HTTP {e.code}: {e.read().decode()}"}
     except urllib.error.URLError as e:
         return {"error": f"Connection failed: {e.reason}"}
+
+
+def query_completions_stream(prompt: str, max_tokens: int = 50, temperature: float = 0.0,
+                             top_k: int = 0, seed: int | None = None,
+                             host: str = "localhost", port: int = 8000):
+    """Send a streaming /v1/completions request, yield token texts as they arrive.
+
+    Yields (token_text, is_last) tuples.
+    """
+    body = {
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_k": top_k,
+        "stream": True,
+    }
+    if seed is not None:
+        body["seed"] = seed
+
+    req = urllib.request.Request(
+        f"http://{host}:{port}/v1/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            yield from parse_sse_lines(resp)
+    except urllib.error.HTTPError as e:
+        yield f"[HTTP {e.code}] {e.read().decode()}", True
+    except urllib.error.URLError as e:
+        yield f"[Connection failed] {e.reason}", True
+
+
+def _run_stream_completion(args):
+    """Run a streaming completion, printing tokens as they arrive."""
+    print(f"Prompt: {args.prompt}")
+    print("Streaming: ", end="", flush=True)
+    for token_text, is_last in query_completions_stream(
+        args.prompt, args.max_tokens, args.temperature,
+        args.top_k, args.seed, args.host, args.port,
+    ):
+        if is_last and not token_text:
+            break
+        print(token_text, end="", flush=True)
+    print()
+    return 0
 
 
 def query_chat(messages: list[dict], max_tokens: int = 50, temperature: float = 0.0,
@@ -99,6 +151,8 @@ def main():
                    help="Use /v1/chat/completions endpoint")
     p.add_argument("--interactive", action="store_true",
                    help="Interactive chat session (implies --chat)")
+    p.add_argument("--stream", action="store_true",
+                   help="Stream tokens as they are generated (completions only)")
     p.add_argument("--system", default=None,
                    help="System prompt for chat mode")
     p.add_argument("--max-tokens", type=int, default=20)
@@ -112,6 +166,12 @@ def main():
 
     if args.interactive:
         sys.exit(_run_interactive(args))
+
+    if args.stream and args.chat:
+        p.error("--stream is not yet supported with --chat")
+
+    if args.stream:
+        sys.exit(_run_stream_completion(args))
 
     if args.chat:
         messages = []

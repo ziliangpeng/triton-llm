@@ -22,11 +22,11 @@
 | prefill-heavy | 2048 | 10 | 2058 | 14.86 | 4.22 | **3.52×** | 1486.4 | 422.4 | ✅ |
 | balanced | 128 | 128 | 256 | 45.43 | 32.03 | **1.42×** | 354.9 | 250.3 | ✅ |
 | balanced | 256 | 64 | 320 | 27.53 | 16.16 | **1.70×** | 430.1 | 252.5 | ✅ |
-|| balanced | 512 | 128 | 640 | 78.62 | 33.06 | **2.38×** | 614.2 | 258.3 | ✅ |
-|| balanced | 1024 | 256 | 1280 | 243.67 | 68.77 | **3.54×** | 951.8 | 268.6 | ✅ |
-|| near-limit | 4096 | 10 | 4106 | 31.97 | 6.59 | **4.85×** | 3196.6 | 658.6 | ✅ |
-|| ~~near-limit~~ | ~~2048~~ | ~~100~~ | ~~2148~~ | — | — | — | — | — | — |
-|| ~~near-limit~~ | ~~512~~ | ~~512~~ | ~~1024~~ | — | — | — | — | — | — |
+| balanced | 512 | 128 | 640 | 78.62 | 33.06 | **2.38×** | 614.2 | 258.3 | ✅ |
+| balanced | 1024 | 256 | 1280 | 243.67 | 68.77 | **3.54×** | 951.8 | 268.6 | ✅ |
+| near-limit | 4096 | 10 | 4106 | 31.97 | 6.59 | **4.85×** | 3196.6 | 658.6 | ✅ |
+| ~~near-limit~~ | ~~2048~~ | ~~100~~ | ~~2148~~ | — | — | — | — | — | — |
+| ~~near-limit~~ | ~~512~~ | ~~512~~ | ~~1024~~ | — | — | — | — | — | — |
 
 > Note: strikethrough rows were not completed (O(T³) full-recompute too slow or process hang). `benchmark_remaining.py` produced these extra results (received late from an async job). Balanced 1024+256 confirms 3.5× regime; near-limit 4096+10 sets the new record at **4.85×**.
 > `pt_full` includes full TFLOPS not applicable (a single full recompute step in decode loop must process the entire growing sequence).
