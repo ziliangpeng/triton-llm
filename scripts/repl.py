@@ -101,9 +101,8 @@ def main():
             ):
                 if chunk_usage is not None:
                     usage = chunk_usage
-                elif is_last and not token_text:
                     break
-                else:
+                elif token_text:
                     print(token_text, end="", flush=True)
             print()
             if usage:

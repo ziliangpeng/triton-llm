@@ -114,9 +114,8 @@ def _run_stream_completion(args):
     ):
         if chunk_usage is not None:
             usage = chunk_usage
-        elif is_last and not token_text:
-            break
-        else:
+            break  # usage chunk always arrives after finish_reason, nothing more to read
+        elif token_text:
             print(token_text, end="", flush=True)
     print()
     if usage:
