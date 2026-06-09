@@ -146,7 +146,9 @@ class SmolLM2ForCausalLM:
             )
 
         # --- GPU-resident weight storage (Phase 1: EC32) ---
-        # Keep CPU versions for backward compatibility; add DeviceTensor copies.
+        # Lazily initialized by _init_gpu_weights() — kept as empty lists so
+        # CPU-only workloads (CPU-based tests) don't need a GPU runtime.
+        self._gpu_initialized = False
         self.q_proj_w_dev: list[gpu.DeviceTensor] = []
         self.k_proj_w_dev: list[gpu.DeviceTensor] = []
         self.v_proj_w_dev: list[gpu.DeviceTensor] = []
@@ -156,7 +158,20 @@ class SmolLM2ForCausalLM:
         self.down_proj_w_dev: list[gpu.DeviceTensor] = []
         self.ln_1_w_dev: list[gpu.DeviceTensor] = []
         self.ln_2_w_dev: list[gpu.DeviceTensor] = []
+        self.ln_f_w_dev: gpu.DeviceTensor | None = None
+        self.lm_head_w_dev: gpu.DeviceTensor | None = None
+        self.cos_dev: gpu.DeviceTensor | None = None
+        self.sin_dev: gpu.DeviceTensor | None = None
 
+    # ------------------------------------------------------------------
+    # GPU weights (lazy init)
+    # ------------------------------------------------------------------
+
+    def _init_gpu_weights(self):
+        """Lazily copy all weights to GPU (called on first GPU forward pass)."""
+        if self._gpu_initialized:
+            return
+        n_layer = self.config.n_layer
         for i in range(n_layer):
             self.q_proj_w_dev.append(gpu.to_device(self.q_proj_w[i]))
             self.k_proj_w_dev.append(gpu.to_device(self.k_proj_w[i]))
@@ -167,15 +182,13 @@ class SmolLM2ForCausalLM:
             self.down_proj_w_dev.append(gpu.to_device(self.down_proj_w[i]))
             self.ln_1_w_dev.append(gpu.to_device(self.ln_1_g[i]))
             self.ln_2_w_dev.append(gpu.to_device(self.ln_2_g[i]))
-
-        # GPU-resident RMSNorm final weight
         self.ln_f_w_dev = gpu.to_device(self.ln_f_g)
-        # GPU-resident LM head weight
         self.lm_head_w_dev = gpu.to_device(self.lm_head_w)
-        # GPU-resident RoPE cos/sin tables
+        d_k = self.config.n_embd // self.config.n_head
         self.cos_dev, self.sin_dev = precompute_cos_sin_device(
-            config.max_position_embeddings, d_k, theta=config.rope_theta
+            self.config.max_position_embeddings, d_k, theta=self.config.rope_theta
         )
+        self._gpu_initialized = True
 
     # ------------------------------------------------------------------
     # Forward
@@ -403,10 +416,18 @@ class SmolLM2ForCausalLM:
     # ------------------------------------------------------------------
 
     def _init_cache_gpu(self, max_seq: int | None = None):
-        """Initialise pre-allocated KV cache for GPU-resident path.
+        """Initialise pre-allocated KV cache for GPU-resident path (Phase 1).
 
-        Allocates host-side numpy arrays (same as CPU path) and GPU-side
-        DeviceTensors for the full pre-allocated buffers.
+        Allocates host-side numpy arrays for KV cache storage. In Phase 1,
+        cache read/write goes through CPU (numpy) due to reshape/transpose
+        constraints. Phase 2 will move the KV cache to GPU-resident
+        DeviceTensors to eliminate the round-trips.
+
+        Parameters
+        ----------
+        max_seq : int or None
+            Maximum sequence length to pre-allocate. Defaults to
+            ``config.max_position_embeddings``.
         """
         if max_seq is None:
             max_seq = self.config.max_position_embeddings
@@ -449,6 +470,8 @@ class SmolLM2ForCausalLM:
         n_kv_head = config.n_kv_head
         d_k = n_embd // n_head
 
+        self._init_gpu_weights()
+
         if not hasattr(self, "kv_cache_dev") or self.kv_cache_dev is None:
             raise RuntimeError("_init_cache_gpu() must be called before _forward_cached_gpu()")
 
@@ -461,6 +484,12 @@ class SmolLM2ForCausalLM:
                 f"Decode mode requires seq=1, got seq={seq}. "
             )
         total_after = prev_seq + seq
+        max_seq = self.kv_cache_dev[0]["k"].shape[1]
+        if total_after > max_seq:
+            raise ValueError(
+                f"Total sequence length {total_after} exceeds "
+                f"pre-allocated cache size ({max_seq})"
+            )
 
         # --- Token embedding on CPU, then copy to GPU once ---
         hidden = self._embed(token_ids)  # (1, seq, n_embd) on CPU

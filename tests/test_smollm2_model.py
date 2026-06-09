@@ -348,10 +348,10 @@ def test_gpu_resident_full_trip():
     np.random.seed(42)
     weights = _make_random_weights(config)
 
-    # GPU path
-    model_gpu = SmolLM2ForCausalLM(config, weights)
+    # GPU path — construction also goes through to_device(), catch GPU-unavailable
     prompt = np.array([[5, 12, 7]], dtype=np.int32)
     try:
+        model_gpu = SmolLM2ForCausalLM(config, weights)
         out_gpu = model_gpu.generate_gpu(prompt, max_new_tokens=5, temperature=0.0)
     except RuntimeError as e:
         if "No supported GPU runtime found" in str(e):
