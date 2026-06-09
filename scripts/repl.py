@@ -13,6 +13,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from scripts._stream_utils import parse_sse_lines
+
 
 def query(prompt: str, max_tokens: int, temperature: float,
           host: str, port: int) -> str:
@@ -56,21 +58,7 @@ def query_stream(prompt: str, max_tokens: int, temperature: float,
     )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            for line in resp:
-                line = line.decode("utf-8", errors="replace").strip()
-                if line.startswith("data: "):
-                    payload = line[6:]
-                    if payload == "[DONE]":
-                        return
-                    try:
-                        chunk = json.loads(payload)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            text = choices[0].get("text", "")
-                            is_last = choices[0].get("finish_reason") is not None
-                            yield text, is_last
-                    except json.JSONDecodeError:
-                        pass
+            yield from parse_sse_lines(resp)
     except urllib.error.HTTPError as e:
         yield f"[HTTP {e.code}] {e.read().decode()}", True
     except urllib.error.URLError as e:
@@ -101,7 +89,6 @@ def main():
             continue
 
         if args.stream:
-            print(end="", flush=True)
             for token_text, is_last in query_stream(
                 prompt, args.max_tokens, args.temperature, args.host, args.port,
             ):

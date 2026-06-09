@@ -34,6 +34,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from scripts._stream_utils import parse_sse_lines
+
 
 def query_completions(prompt: str, max_tokens: int = 50, temperature: float = 0.0,
                       top_k: int = 0, seed: int | None = None,
@@ -88,21 +90,7 @@ def query_completions_stream(prompt: str, max_tokens: int = 50, temperature: flo
 
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            for line in resp:
-                line = line.decode("utf-8", errors="replace").strip()
-                if line.startswith("data: "):
-                    payload = line[6:]
-                    if payload == "[DONE]":
-                        return
-                    try:
-                        chunk = json.loads(payload)
-                        choices = chunk.get("choices", [])
-                        if choices:
-                            text = choices[0].get("text", "")
-                            is_last = choices[0].get("finish_reason") is not None
-                            yield text, is_last
-                    except json.JSONDecodeError:
-                        pass
+            yield from parse_sse_lines(resp)
     except urllib.error.HTTPError as e:
         yield f"[HTTP {e.code}] {e.read().decode()}", True
     except urllib.error.URLError as e:
@@ -175,6 +163,9 @@ def main():
 
     if args.interactive:
         sys.exit(_run_interactive(args))
+
+    if args.stream and args.chat:
+        p.error("--stream is not yet supported with --chat")
 
     if args.stream:
         sys.exit(_run_stream_completion(args))
