@@ -14,6 +14,7 @@ from .rms_norm import rms_norm
 from .rope import precompute_cos_sin, apply_rope
 from .softmax import softmax
 from .swiglu import swiglu
+from .transpose_2d import to_head_major_dev, to_seq_major_dev, flat_to_cache_dev, cache_to_flat_dev
 
 __all__ = [
     "add",
@@ -28,4 +29,8 @@ __all__ = [
     "apply_rope",
     "softmax",
     "swiglu",
+    "to_head_major_dev",
+    "to_seq_major_dev",
+    "flat_to_cache_dev",
+    "cache_to_flat_dev",
 ]
