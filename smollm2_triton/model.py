@@ -549,28 +549,31 @@ class SmolLM2ForCausalLM:
         # Prefill: forward with cache, stores K/V for all positions
         t0 = time.time()
         logits = self.forward(token_ids, use_cache=True)
-        prefill_time = time.time() - t0
 
         # Generate loop
         tokens = token_ids.copy()
+        t_decode_start: float = 0.0  # set after first decode forward
         for step in range(max_new_tokens):
-            t_step = time.time()
+            # Sample from current logits
             next_logits = logits[0, -1, :]  # (vocab_size,)
             next_token = self._sample(next_logits, temperature, top_k)
             tokens = np.concatenate(
                 [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
             )
-            # First token: step_time includes prefill (true TTFT).
-            # Subsequent tokens: step_time is decode-only (per-token latency).
+
             if step == 0:
+                # TTFT: prefill → first token sampled
                 step_time = time.time() - t0
             else:
-                step_time = time.time() - t_step
+                # Per-token latency: time spent in the previous forward()
+                step_time = time.time() - t_decode_start
+
             yield next_token, step_time
 
             if step < max_new_tokens - 1:
-                # Single-token decode step
+                # Single-token decode step — measure its wall time
                 new_token_arr = np.array([[next_token]], dtype=np.int32)
+                t_decode_start = time.time()
                 logits = self.forward(new_token_arr, use_cache=True)
 
     def generate(
