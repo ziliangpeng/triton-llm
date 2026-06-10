@@ -349,7 +349,9 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
         np.random.seed(seed)
 
     # Queue to bridge sync generate_stream() -> async SSE
-    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    # Use 0 (unbounded) for GPU path where tokens arrive in burst;
+    # the consumer drains at steady rate via SSE chunks.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=0)
     loop = asyncio.get_running_loop()
 
     def _run():
