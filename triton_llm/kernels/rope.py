@@ -233,3 +233,102 @@ def apply_rope(
     # Explicit device synchronize to ensure kernel completion before host read.
     gpu.synchronize()
     return gpu.to_host(x_dev).reshape(orig_shape)
+
+
+def precompute_cos_sin_device(
+    max_seq_len: int,
+    d_k: int,
+    theta: float = 100000.0,
+) -> tuple["gpu.DeviceTensor", "gpu.DeviceTensor"]:
+    """Precompute cos/sin tables for RoPE and keep them on GPU.
+
+    Returns (cos_dev, sin_dev), each of shape ``(max_seq_len, d_k // 2)``, float32 on GPU.
+
+    Parameters
+    ----------
+    max_seq_len : int
+        Maximum sequence length (context window).
+    d_k : int
+        Head dimension. Must be even.
+    theta : float
+        Base frequency for RoPE.
+
+    Returns
+    -------
+    cos_dev : DeviceTensor, shape (max_seq_len, d_k // 2), float32
+    sin_dev : DeviceTensor, shape (max_seq_len, d_k // 2), float32
+    """
+    cos_np, sin_np = precompute_cos_sin(max_seq_len, d_k, theta)
+    return gpu.to_device(cos_np), gpu.to_device(sin_np)
+
+
+def apply_rope_device(
+    x_dev: "gpu.DeviceTensor",
+    cos_dev: "gpu.DeviceTensor",
+    sin_dev: "gpu.DeviceTensor",
+    seq_len: int,
+    position_offset: int = 0,
+) -> "gpu.DeviceTensor":
+    """GPU-resident RoPE. No sync, no host copies. Applies RoPE in-place on x_dev.
+
+    Parameters
+    ----------
+    x_dev : DeviceTensor, shape (n_rows, d_k), float32
+        Q or K tensor on GPU. Will be modified in-place.
+    cos_dev : DeviceTensor, shape (max_seq, d_k // 2), float32
+        Cos table on GPU.
+    sin_dev : DeviceTensor, shape (max_seq, d_k // 2), float32
+        Sin table on GPU.
+    seq_len : int
+        Actual sequence length.
+    position_offset : int
+        Position offset for KV cache decode (default: 0).
+
+    Returns
+    -------
+    x_dev : DeviceTensor (same as input, modified in-place)
+    """
+    n_rows, d_k = x_dev.shape
+    if d_k < 2 or d_k % 2 != 0:
+        raise ValueError(f"d_k must be even and >= 2, got {d_k}")
+    half = d_k // 2
+    if len(cos_dev.shape) != 2 or len(sin_dev.shape) != 2:
+        raise ValueError("cos_dev and sin_dev must be 2D tensors")
+    if cos_dev.shape != sin_dev.shape:
+        raise ValueError(f"cos_dev and sin_dev shape mismatch: {cos_dev.shape} vs {sin_dev.shape}")
+    if cos_dev.shape[1] != half:
+        raise ValueError(f"cos_dev last dim must be d_k // 2 ({half}), got {cos_dev.shape[1]}")
+    if n_rows == 0:
+        return x_dev
+    if seq_len < 1:
+        raise ValueError(f"seq_len must be >= 1, got {seq_len}")
+    if position_offset < 0:
+        raise ValueError(f"position_offset must be >= 0, got {position_offset}")
+    if position_offset + seq_len > cos_dev.shape[0]:
+        raise ValueError(
+            f"position_offset ({position_offset}) + seq_len ({seq_len}) "
+            f"exceeds cos/sin table size ({cos_dev.shape[0]})"
+        )
+    if n_rows % seq_len != 0:
+        raise ValueError(
+            f"Total rows ({n_rows}) must be a multiple of seq_len ({seq_len})"
+        )
+
+    block_size = triton.next_power_of_2(half)
+    stride_x = d_k  # contiguous row stride in elements
+
+    grid = (n_rows,)
+
+    _rope_kernel[grid](
+        x_dev.data_ptr(),
+        cos_dev.data_ptr(),
+        sin_dev.data_ptr(),
+        n_rows,
+        seq_len,
+        stride_x,
+        position_offset,
+        d_k,
+        block_size,
+    )
+
+    return x_dev

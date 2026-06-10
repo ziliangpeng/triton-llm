@@ -95,3 +95,47 @@ def add(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
     gpu.synchronize()
     return gpu.to_host(z_dev)
+
+
+def add_device(
+    x_dev: "gpu.DeviceTensor",
+    y_dev: "gpu.DeviceTensor",
+    out_dev: "gpu.DeviceTensor | None" = None,
+) -> "gpu.DeviceTensor":
+    """GPU-resident element-wise addition. No sync, no host copies.
+
+    Parameters
+    ----------
+    x_dev : DeviceTensor, any shape, float32
+        First operand on GPU.
+    y_dev : DeviceTensor, same shape as x_dev, float32
+        Second operand on GPU.
+    out_dev : DeviceTensor, optional
+        Pre-allocated output. Auto-allocated if None.
+
+    Returns
+    -------
+    out_dev : DeviceTensor, same shape as inputs, float32
+    """
+    assert x_dev.shape == y_dev.shape, f"Shape mismatch: {x_dev.shape} vs {y_dev.shape}"
+    if out_dev is not None:
+        assert out_dev.shape == x_dev.shape, f"out_dev shape mismatch: expected {x_dev.shape}, got {out_dev.shape}"
+
+    N = int(np.prod(x_dev.shape))
+    if N == 0:
+        if out_dev is None:
+            out_dev = gpu.allocate(x_dev.shape, np.float32)
+        return out_dev
+
+    if out_dev is None:
+        out_dev = gpu.allocate(x_dev.shape, np.float32)
+
+    BLOCK_SIZE = 1024
+    grid = (triton.cdiv(N, BLOCK_SIZE),)
+
+    _add_kernel[grid](
+        x_dev.data_ptr(), y_dev.data_ptr(), out_dev.data_ptr(),
+        N, BLOCK_SIZE,
+    )
+
+    return out_dev

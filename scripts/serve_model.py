@@ -101,6 +101,7 @@ model = None
 tokenizer = None
 model_variant = "SmolLM2-135M"
 no_download = False
+use_gpu = False
 PORT = 8000  # default, overridden by CLI args in __main__
 
 
@@ -204,12 +205,14 @@ def warmup(model, tokenizer):
     After warmup, no Triton compilation happens on the first real request.
     Uses generate() so internal _init_cache() is called properly.
     """
-    # numpy already imported at top of file
     ids = tokenizer.encode("a")
     token_ids = np.array([ids], dtype=np.int32)
 
     t0 = time.time()
-    _ = model.generate(token_ids, max_new_tokens=1, temperature=0.0)
+    if use_gpu:
+        _ = model.generate_gpu(token_ids, max_new_tokens=1, temperature=0.0)
+    else:
+        _ = model.generate(token_ids, max_new_tokens=1, temperature=0.0)
     dt = time.time() - t0
     logger.info(f"  Warmup prefill + 1 decode: {dt:.1f}s  (Triton compile all kernels)")
 
@@ -301,7 +304,10 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
         np.random.seed(seed)
 
     t0 = time.time()
-    out = model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+    if use_gpu:
+        out = model.generate_gpu(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+    else:
+        out = model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
     dt = time.time() - t0
 
     new_ids = out[0, seq_len:].tolist()
@@ -343,19 +349,38 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
         np.random.seed(seed)
 
     # Queue to bridge sync generate_stream() -> async SSE
-    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    # Use 0 (unbounded) for GPU path where tokens arrive in burst;
+    # the consumer drains at steady rate via SSE chunks.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=0)
     loop = asyncio.get_running_loop()
 
     def _run():
         """Runs in a background thread — consumes the sync generator."""
         try:
-            for token_id, step_time in model.generate_stream(
-                token_ids, max_new_tokens=max_tokens,
-                temperature=temperature, top_k=top_k,
-            ):
-                loop.call_soon_threadsafe(
-                    queue.put_nowait, ("token", token_id, step_time)
+            if use_gpu:
+                # GPU path: generate all tokens at once, yield one by one
+                t_prefill = time.time()
+                out_gpu = model.generate_gpu(
+                    token_ids, max_new_tokens=max_tokens,
+                    temperature=temperature, top_k=top_k,
                 )
+                t_after = time.time()
+                # First token = prefill; rest = decode (approximate per-token)
+                new_tokens = out_gpu[0, seq_len:].tolist()
+                per_step = (t_after - t_prefill) / max(len(new_tokens), 1)
+                for i, tid in enumerate(new_tokens):
+                    step_time = t_after - t_prefill if i == 0 else per_step
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait, ("token", tid, step_time)
+                    )
+            else:
+                for token_id, step_time in model.generate_stream(
+                    token_ids, max_new_tokens=max_tokens,
+                    temperature=temperature, top_k=top_k,
+                ):
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait, ("token", token_id, step_time)
+                    )
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None, None))
         except Exception as e:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e), None))
@@ -475,6 +500,8 @@ def parse_args():
                    choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B"])
     p.add_argument("--no-download", action="store_true",
                    help="Skip real weights, use random (fast, gibberish output)")
+    p.add_argument("--gpu", action="store_true",
+                   help="Use GPU-resident inference path (7-8x faster)")
     p.add_argument("--log-level", type=str, default="info",
                    choices=["debug", "info", "warning", "error"])
     return p.parse_args()
@@ -486,5 +513,6 @@ if __name__ == "__main__":
                         format="%(levelname)s %(message)s")
     model_variant = args.model
     no_download = args.no_download
+    use_gpu = args.gpu
     PORT = args.port
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)

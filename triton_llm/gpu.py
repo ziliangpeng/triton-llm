@@ -10,6 +10,7 @@ environment variable override and runtime auto-detection.
 
 import ctypes
 import os
+import getpass
 import numpy as np
 
 CUDA_MEMCPY_HOST_TO_DEVICE = 1
@@ -140,11 +141,29 @@ _memcpy = None
 
 
 def _initialize():
-    """Lazily initialize the GPU runtime on first use."""
+    """Lazily initialize the GPU runtime on first use.
+
+    Also sets ``TRITON_CACHE_DIR`` to a local (non-NFS) path so that
+    Triton JIT compilation and cache lookups don't go through the
+    network filesystem — on clusters where ``$HOME`` is NFS-mounted,
+    that adds ~2 s of latency to the first forward pass.
+    """
     global _initialized, _backend, _rt, _malloc, _free, _memcpy
 
     if _initialized:
         return
+
+    # Force Triton's JIT cache onto a local (non-NFS) filesystem.
+    # The default ``~/.triton/cache/`` lives on the home directory,
+    # which is NFS-mounted on many GPU clusters (gcp5, amd2, etc.).
+    # Every cache lookup over NFS adds ~80–100 µs, and the first
+    # access can stall for seconds.
+    if "TRITON_CACHE_DIR" not in os.environ:
+        try:
+            username = getpass.getuser()
+            os.environ["TRITON_CACHE_DIR"] = f"/tmp/triton_cache_{username}"
+        except Exception:
+            os.environ["TRITON_CACHE_DIR"] = "/tmp/triton_cache"
 
     _backend = _detect_backend()
     _rt = _load_runtime(_backend)
@@ -165,14 +184,15 @@ def check_error(err):
 class DeviceTensor:
     """Wrapper for a GPU device pointer with automatic cleanup."""
 
-    def __init__(self, ptr, shape, dtype, nbytes):
+    def __init__(self, ptr, shape, dtype, nbytes, defer_free=True):
         self.ptr = ptr
         self.shape = shape
         self.dtype = dtype
         self.nbytes = nbytes
+        self._defer_free = defer_free
 
     def __del__(self):
-        if self.ptr and self.ptr.value is not None:
+        if self._defer_free and self.ptr and self.ptr.value is not None:
             try:
                 if _free is not None:
                     _free(self.ptr)
@@ -241,3 +261,34 @@ def synchronize():
     sync_fn.restype = ctypes.c_int
     err = sync_fn()
     check_error(err)
+
+
+def view(tensor: DeviceTensor, new_shape: tuple) -> DeviceTensor:
+    """Return a zero-copy view of ``tensor`` with a new shape.
+
+    Same device pointer, same memory, different shape tuple.  The new
+    shape must have the same total number of elements as the original.
+    The returned tensor does NOT own the GPU memory — freeing is
+    deferred to the original tensor.
+
+    Parameters
+    ----------
+    tensor : DeviceTensor
+        Source tensor whose GPU memory is reused.
+    new_shape : tuple of int
+        New shape (same total element count).
+
+    Returns
+    -------
+    DeviceTensor
+        A view with the same pointer and ``nbytes`` but shape ``new_shape``.
+        ``defer_free=False`` so the original tensor is responsible for freeing.
+    """
+    n_elems = int(np.prod(tensor.shape))
+    n_new = int(np.prod(new_shape))
+    if n_elems != n_new:
+        raise ValueError(
+            f"Cannot view {tensor.shape} ({n_elems} elements) as "
+            f"{new_shape} ({n_new} elements) — element count mismatch"
+        )
+    return DeviceTensor(tensor.ptr, new_shape, tensor.dtype, tensor.nbytes, defer_free=False)

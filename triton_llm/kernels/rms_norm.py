@@ -131,3 +131,53 @@ def rms_norm(
     # Explicit device synchronize to ensure kernel completion before host read.
     gpu.synchronize()
     return gpu.to_host(y_dev).reshape(orig_shape)
+
+
+def rms_norm_device(
+    x_dev: "gpu.DeviceTensor",
+    w_dev: "gpu.DeviceTensor",
+    out_dev: "gpu.DeviceTensor",
+    eps: float = 1e-5,
+) -> "gpu.DeviceTensor":
+    """GPU-resident RMSNorm. No sync, no host copies.
+
+    Parameters
+    ----------
+    x_dev : DeviceTensor, shape (M, N), float32
+        Input on GPU.
+    w_dev : DeviceTensor, shape (N,), float32
+        Weight on GPU.
+    out_dev : DeviceTensor, shape (M, N), float32
+        Pre-allocated output on GPU.
+    eps : float
+        Small constant for numerical stability.
+
+    Returns
+    -------
+    out_dev : DeviceTensor, shape (M, N), float32
+    """
+    M, N = x_dev.shape
+    assert w_dev.shape == (N,), f"w_dev shape mismatch: expected ({N},), got {w_dev.shape}"
+    assert out_dev.shape == (M, N), f"out_dev shape mismatch: expected ({M},{N}), got {out_dev.shape}"
+    if M == 0:
+        return out_dev
+    if N == 0:
+        raise ValueError("RMSNorm requires the last dimension N > 0")
+
+    # Strides in elements.
+    stride_x = N  # contiguous
+    stride_y = N
+
+    BLOCK_SIZE = max(_next_pow2(N), 16)
+
+    grid = (M,)
+
+    _rms_norm_kernel[grid](
+        x_dev.data_ptr(), out_dev.data_ptr(), w_dev.data_ptr(),
+        M, N,
+        stride_x, stride_y,
+        eps,
+        BLOCK_SIZE,
+    )
+
+    return out_dev

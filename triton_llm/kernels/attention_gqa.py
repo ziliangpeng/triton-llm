@@ -284,3 +284,126 @@ def attention_gqa(
 
     gpu.synchronize()
     return gpu.to_host(o_dev)
+
+
+def attention_gqa_device(
+    q_dev: "gpu.DeviceTensor",
+    k_dev: "gpu.DeviceTensor",
+    v_dev: "gpu.DeviceTensor",
+    n_head: int,
+    n_kv_head: int,
+    causal: bool = True,
+    sm_scale: float | None = None,
+) -> "gpu.DeviceTensor":
+    """GPU-resident GQA attention. No sync, no host copies.
+
+    Input format (flat)::
+
+        Q: (n_head * seq_q, d_k)  — rows grouped by head
+        K: (n_kv_head * seq_k, d_k)
+        V: (n_kv_head * seq_k, d_k)
+
+    Parameters
+    ----------
+    q_dev : DeviceTensor, shape (n_head * seq_q, d_k), float32
+        Query on GPU.
+    k_dev : DeviceTensor, shape (n_kv_head * seq_k, d_k), float32
+        Key on GPU.
+    v_dev : DeviceTensor, shape (n_kv_head * seq_k, d_k), float32
+        Value on GPU.
+    n_head : int
+        Number of query heads.
+    n_kv_head : int
+        Number of key/value heads. Must divide ``n_head``.
+    causal : bool
+        If True, apply causal masking (default).
+    sm_scale : float or None
+        Softmax scale. If None, defaults to ``1.0 / sqrt(d_k)``.
+
+    Returns
+    -------
+    o_dev : DeviceTensor, shape (n_head * seq_q, d_k), float32
+        Attention output on GPU.
+    """
+    # --- Input validation ---
+    if n_head <= 0:
+        raise ValueError(f"n_head must be > 0, got {n_head}")
+    if n_kv_head <= 0:
+        raise ValueError(f"n_kv_head must be > 0, got {n_kv_head}")
+    if n_head % n_kv_head != 0:
+        raise ValueError(
+            f"n_head ({n_head}) must be divisible by n_kv_head ({n_kv_head})"
+        )
+    if len(q_dev.shape) != 2 or len(k_dev.shape) != 2 or len(v_dev.shape) != 2:
+        raise ValueError(
+            f"All inputs must be 2D, got q.ndim={len(q_dev.shape)}, k.ndim={len(k_dev.shape)}, v.ndim={len(v_dev.shape)}"
+        )
+
+    # Use .shape which is a tuple for DeviceTensor
+    if q_dev.shape[0] % n_head != 0:
+        raise ValueError(
+            f"Query shape[0] ({q_dev.shape[0]}) must be divisible by n_head ({n_head})"
+        )
+    if k_dev.shape[0] % n_kv_head != 0:
+        raise ValueError(
+            f"Key shape[0] ({k_dev.shape[0]}) must be divisible by n_kv_head ({n_kv_head})"
+        )
+
+    d_k = q_dev.shape[1]
+    seq_q = q_dev.shape[0] // n_head
+    seq_k = k_dev.shape[0] // n_kv_head
+
+    if k_dev.shape != (n_kv_head * seq_k, d_k):
+        raise ValueError(
+            f"K shape {k_dev.shape} != expected ({n_kv_head * seq_k}, {d_k})"
+        )
+    if v_dev.shape != (n_kv_head * seq_k, d_k):
+        raise ValueError(
+            f"V shape {v_dev.shape} != expected ({n_kv_head * seq_k}, {d_k})"
+        )
+
+    if seq_q == 0:
+        return gpu.allocate((0, d_k), np.float32)
+    if seq_k == 0:
+        return gpu.allocate((n_head * seq_q, d_k), np.float32)
+
+    if d_k <= 0 or (d_k & (d_k - 1)) != 0:
+        raise ValueError(
+            f"d_k ({d_k}) must be a positive power of 2 for Triton compilation"
+        )
+
+    if sm_scale is None:
+        sm_scale = 1.0 / (d_k ** 0.5)
+
+    # Strides in elements
+    stride_q = d_k  # contiguous
+    stride_k = d_k
+    stride_v = d_k
+
+    o_dev = gpu.allocate((n_head * seq_q, d_k), np.float32)
+    stride_o = o_dev.shape[1]
+
+    BLOCK_SIZE = 64
+    grid = (seq_q, n_head)
+
+    _gqa_attention_kernel[grid](
+        q_dev.data_ptr(),
+        k_dev.data_ptr(),
+        v_dev.data_ptr(),
+        o_dev.data_ptr(),
+        seq_q,
+        seq_k,
+        stride_q,
+        stride_k,
+        stride_v,
+        stride_o,
+        n_head,
+        n_kv_head,
+        sm_scale,
+        GROUP_SIZE=n_head // n_kv_head,
+        HEAD_SIZE=d_k,
+        BLOCK_SIZE=BLOCK_SIZE,
+        CAUSAL=causal,
+    )
+
+    return o_dev
