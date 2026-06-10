@@ -10,6 +10,7 @@ environment variable override and runtime auto-detection.
 
 import ctypes
 import os
+import getpass
 import numpy as np
 
 CUDA_MEMCPY_HOST_TO_DEVICE = 1
@@ -158,7 +159,11 @@ def _initialize():
     # Every cache lookup over NFS adds ~80–100 µs, and the first
     # access can stall for seconds.
     if "TRITON_CACHE_DIR" not in os.environ:
-        os.environ["TRITON_CACHE_DIR"] = "/tmp/tc"
+        try:
+            username = getpass.getuser()
+            os.environ["TRITON_CACHE_DIR"] = f"/tmp/triton_cache_{username}"
+        except Exception:
+            os.environ["TRITON_CACHE_DIR"] = "/tmp/triton_cache"
 
     _backend = _detect_backend()
     _rt = _load_runtime(_backend)

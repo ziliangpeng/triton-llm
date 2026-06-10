@@ -126,6 +126,8 @@ def gemm_device(
     M, K = h_dev.shape
     K2, N = w_dev.shape
     assert K == K2, f"gemm_device shape mismatch: ({M},{K}) x ({K2},{N})"
+    if out_dev is not None:
+        assert out_dev.shape == (M, N), f"out_dev shape mismatch: expected ({M},{N}), got {out_dev.shape}"
 
     # Handle zero-dimension edge cases
     if K == 0 or M == 0 or N == 0:

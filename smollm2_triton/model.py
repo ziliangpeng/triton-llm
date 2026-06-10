@@ -527,8 +527,8 @@ class SmolLM2ForCausalLM:
                 # Cache read for decode attention
                 k_view_np = cache["k"][:, :total_after, :].reshape(-1, d_k)
                 v_view_np = cache["v"][:, :total_after, :].reshape(-1, d_k)
-                k_view_dev = gpu.to_device(k_view_np)
-                v_view_dev = gpu.to_device(v_view_np)
+                k_view_dev = gpu.to_device(np.ascontiguousarray(k_view_np))
+                v_view_dev = gpu.to_device(np.ascontiguousarray(v_view_np))
 
                 attn_dev = attention_gqa_device(
                     q_hm, k_view_dev, v_view_dev,
@@ -544,9 +544,9 @@ class SmolLM2ForCausalLM:
                 k_np = gpu.to_host(k_dev)
                 v_np = gpu.to_host(v_dev)
 
-                q_flat = q_np.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
-                k_flat = k_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
-                v_flat = v_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k)
+                q_flat = np.ascontiguousarray(q_np.reshape(seq, n_head, d_k).transpose(1, 0, 2).reshape(-1, d_k))
+                k_flat = np.ascontiguousarray(k_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k))
+                v_flat = np.ascontiguousarray(v_np.reshape(seq, n_kv_head, d_k).transpose(1, 0, 2).reshape(-1, d_k))
 
                 q_dev = gpu.to_device(q_flat)
                 k_dev = gpu.to_device(k_flat)
@@ -572,8 +572,8 @@ class SmolLM2ForCausalLM:
 
                     k_view_np = cache["k"][:, :total_after, :].reshape(-1, d_k)
                     v_view_np = cache["v"][:, :total_after, :].reshape(-1, d_k)
-                    k_view_dev = gpu.to_device(k_view_np)
-                    v_view_dev = gpu.to_device(v_view_np)
+                    k_view_dev = gpu.to_device(np.ascontiguousarray(k_view_np))
+                    v_view_dev = gpu.to_device(np.ascontiguousarray(v_view_np))
 
                     attn_dev = attention_gqa_device(
                         q_dev, k_view_dev, v_view_dev,
@@ -583,7 +583,7 @@ class SmolLM2ForCausalLM:
 
                 # Transpose attention output back: (n_head*seq, d_k) -> (seq, n_head*d_k)
                 attn_np = gpu.to_host(attn_dev)
-                attn_seq_major = attn_np.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k)
+                attn_seq_major = np.ascontiguousarray(attn_np.reshape(n_head, seq, d_k).transpose(1, 0, 2).reshape(seq, n_head * d_k))
                 attn_sm = gpu.to_device(attn_seq_major)
 
             # Output projection + residual on GPU

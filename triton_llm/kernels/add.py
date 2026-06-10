@@ -118,6 +118,8 @@ def add_device(
     out_dev : DeviceTensor, same shape as inputs, float32
     """
     assert x_dev.shape == y_dev.shape, f"Shape mismatch: {x_dev.shape} vs {y_dev.shape}"
+    if out_dev is not None:
+        assert out_dev.shape == x_dev.shape, f"out_dev shape mismatch: expected {x_dev.shape}, got {out_dev.shape}"
 
     N = int(np.prod(x_dev.shape))
     if N == 0:

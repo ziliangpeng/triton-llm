@@ -141,6 +141,8 @@ def swiglu_device(
 
     # Total number of elements
     N = int(np.prod(gate_dev.shape))
+    if out_dev is not None:
+        assert out_dev.shape == gate_dev.shape, f"out_dev shape mismatch: expected {gate_dev.shape}, got {out_dev.shape}"
 
     if N == 0:
         if out_dev is None:

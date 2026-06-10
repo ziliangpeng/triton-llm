@@ -157,6 +157,10 @@ def rms_norm_device(
     out_dev : DeviceTensor, shape (M, N), float32
     """
     M, N = x_dev.shape
+    assert w_dev.shape == (N,), f"w_dev shape mismatch: expected ({N},), got {w_dev.shape}"
+    assert out_dev.shape == (M, N), f"out_dev shape mismatch: expected ({M},{N}), got {out_dev.shape}"
+    if M == 0:
+        return out_dev
     if N == 0:
         raise ValueError("RMSNorm requires the last dimension N > 0")
 

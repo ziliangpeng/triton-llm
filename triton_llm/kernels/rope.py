@@ -291,6 +291,15 @@ def apply_rope_device(
     n_rows, d_k = x_dev.shape
     if d_k < 2 or d_k % 2 != 0:
         raise ValueError(f"d_k must be even and >= 2, got {d_k}")
+    half = d_k // 2
+    if len(cos_dev.shape) != 2 or len(sin_dev.shape) != 2:
+        raise ValueError("cos_dev and sin_dev must be 2D tensors")
+    if cos_dev.shape != sin_dev.shape:
+        raise ValueError(f"cos_dev and sin_dev shape mismatch: {cos_dev.shape} vs {sin_dev.shape}")
+    if cos_dev.shape[1] != half:
+        raise ValueError(f"cos_dev last dim must be d_k // 2 ({half}), got {cos_dev.shape[1]}")
+    if n_rows == 0:
+        return x_dev
     if seq_len < 1:
         raise ValueError(f"seq_len must be >= 1, got {seq_len}")
     if position_offset < 0:
@@ -305,7 +314,6 @@ def apply_rope_device(
             f"Total rows ({n_rows}) must be a multiple of seq_len ({seq_len})"
         )
 
-    half = d_k // 2
     block_size = triton.next_power_of_2(half)
     stride_x = d_k  # contiguous row stride in elements
 
