@@ -295,6 +295,11 @@ def apply_rope_device(
         raise ValueError(f"seq_len must be >= 1, got {seq_len}")
     if position_offset < 0:
         raise ValueError(f"position_offset must be >= 0, got {position_offset}")
+    if position_offset + seq_len > cos_dev.shape[0]:
+        raise ValueError(
+            f"position_offset ({position_offset}) + seq_len ({seq_len}) "
+            f"exceeds cos/sin table size ({cos_dev.shape[0]})"
+        )
     if n_rows % seq_len != 0:
         raise ValueError(
             f"Total rows ({n_rows}) must be a multiple of seq_len ({seq_len})"
