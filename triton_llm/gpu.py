@@ -140,11 +140,25 @@ _memcpy = None
 
 
 def _initialize():
-    """Lazily initialize the GPU runtime on first use."""
+    """Lazily initialize the GPU runtime on first use.
+
+    Also sets ``TRITON_CACHE_DIR`` to a local (non-NFS) path so that
+    Triton JIT compilation and cache lookups don't go through the
+    network filesystem — on clusters where ``$HOME`` is NFS-mounted,
+    that adds ~2 s of latency to the first forward pass.
+    """
     global _initialized, _backend, _rt, _malloc, _free, _memcpy
 
     if _initialized:
         return
+
+    # Force Triton's JIT cache onto a local (non-NFS) filesystem.
+    # The default ``~/.triton/cache/`` lives on the home directory,
+    # which is NFS-mounted on many GPU clusters (gcp5, amd2, etc.).
+    # Every cache lookup over NFS adds ~80–100 µs, and the first
+    # access can stall for seconds.
+    if "TRITON_CACHE_DIR" not in os.environ:
+        os.environ["TRITON_CACHE_DIR"] = "/tmp/tc"
 
     _backend = _detect_backend()
     _rt = _load_runtime(_backend)
