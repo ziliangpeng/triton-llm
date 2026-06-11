@@ -422,6 +422,71 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     yield "data: [DONE]\n\n"
 
 
+async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
+    """Like _stream_generate but yields OpenAI chat format SSE chunks."""
+    token_ids = encode(req_prompt)
+    seq_len = token_ids.shape[1]
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=0)
+    loop = asyncio.get_running_loop()
+
+    def _run():
+        try:
+            for token_id, step_time in model.generate_stream_gpu(
+                token_ids, max_new_tokens=max_tokens,
+                temperature=temperature, top_k=top_k,
+            ):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, ("token", token_id, step_time)
+                )
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None, None))
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e), None))
+            logger.exception("generate_stream error")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    step_times: list[float] = []
+    while True:
+        msg_type, payload, step_time = await queue.get()
+        if msg_type == "token":
+            token_text = decode([payload])
+            chunk = {
+                "choices": [{
+                    "delta": {"content": token_text},
+                    "finish_reason": None,
+                }],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            step_times.append(step_time)
+        elif msg_type == "done":
+            break
+        elif msg_type == "error":
+            yield f"data: {json.dumps({'error': payload})}\n\n"
+            return
+
+    final_chunk = {
+        "choices": [{"delta": {}, "finish_reason": "length"}],
+    }
+    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+
+    usage_chunk = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": seq_len,
+            "completion_tokens": len(step_times),
+            "total_tokens": seq_len + len(step_times),
+            "time_seconds": round(sum(step_times), 3),
+        },
+    }
+    yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 @app.post("/v1/completions")
 async def completions(req: CompletionRequest):
     # Validate before StreamingResponse — HTTPException must be caught by FastAPI
@@ -455,7 +520,11 @@ async def completions(req: CompletionRequest):
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(req: ChatCompletionRequest):
     if req.stream:
-        raise HTTPException(400, "Chat streaming not yet supported; use /v1/completions with stream=true")
+        prompt = format_chat_prompt([m.model_dump() for m in req.messages])
+        return StreamingResponse(
+            _stream_chat_generate(prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
+            media_type="text/event-stream",
+        )
     prompt = format_chat_prompt([m.model_dump() for m in req.messages])
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
