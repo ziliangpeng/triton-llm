@@ -429,7 +429,7 @@ def test_gpu_stream_generation():
 
     print(f"  Streaming tokens: {stream_tokens}")
     print(f"  TTFT: {stream_times[0]*1000:.1f}ms, "
-          f"TPOT: {sum(stream_times[1:])/(len(stream_times)-1)*1000:.1f}ms  [PASS]")
+          f"TPOT: {sum(stream_times[1:])/max(len(stream_times)-1, 1)*1000:.1f}ms  [PASS]")
     return True
 
 
