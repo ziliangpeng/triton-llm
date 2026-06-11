@@ -748,7 +748,7 @@ class SmolLM2ForCausalLM:
         self._init_cache_gpu()
 
         # Prefill
-        t0 = time.time()
+        t0 = time.perf_counter()
         logits = self._forward_cached_gpu(token_ids)
 
         t_decode_start: float = 0.0
@@ -757,15 +757,15 @@ class SmolLM2ForCausalLM:
             next_token = self._sample(next_logits, temperature, top_k)
 
             if step == 0:
-                step_time = time.time() - t0  # TTFT: prefill → first token
+                step_time = time.perf_counter() - t0  # TTFT: prefill → first token
             else:
-                step_time = time.time() - t_decode_start  # TPOT
+                step_time = time.perf_counter() - t_decode_start  # TPOT
 
             yield next_token, step_time
 
             if step < max_new_tokens - 1:
                 new_token_arr = np.array([[next_token]], dtype=np.int32)
-                t_decode_start = time.time()
+                t_decode_start = time.perf_counter()
                 logits = self._forward_cached_gpu(new_token_arr)
 
     def _apply_attention(
