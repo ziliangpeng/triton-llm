@@ -121,7 +121,14 @@ def encode(text: str) -> np.ndarray:
 
 
 def decode(ids: list[int]) -> str:
-    return tokenizer.decode(ids, skip_special_tokens=True)
+    """Decode token IDs to text, stripping leading role prefixes."""
+    text = tokenizer.decode(ids, skip_special_tokens=True)
+    # Instruct models sometimes generate the role prefix as literal text
+    # (e.g. "assistant\n..." instead of just "..."). Strip it.
+    for prefix in ("assistant\n", "user\n", "system\n"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text
 
 
 # ── Weights ───────────────────────────────────────────────────────────
@@ -453,6 +460,12 @@ async def chat_completions(req: ChatCompletionRequest):
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
+    # Strip leading role prefix that small Instruct models sometimes generate
+    clean_text = new_text
+    for prefix in ("assistant\n", "user\n", "system\n"):
+        if clean_text.startswith(prefix):
+            clean_text = clean_text[len(prefix):]
+            break
     return ChatCompletionResponse(
         usage=Usage(
             prompt_tokens=seq_len,
@@ -462,7 +475,7 @@ async def chat_completions(req: ChatCompletionRequest):
         ),
         choices=[
             ChatResponseChoice(
-                message=ChatMessage(role="assistant", content=new_text),
+                message=ChatMessage(role="assistant", content=clean_text),
                 finish_reason="length",
             )
         ],
