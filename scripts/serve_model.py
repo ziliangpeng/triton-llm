@@ -121,23 +121,16 @@ def encode(text: str) -> np.ndarray:
 
 
 def decode(ids: list[int]) -> str:
-    """Decode token IDs to text, truncating at the first role boundary.
+    """Decode token IDs to text, stripping leading role prefixes.
 
-    Instruct models often continue generating beyond the assistant turn
-    (e.g. ``user\\n...``, ``assistant\\n...``). Since we generate one
-    turn at a time, we truncate when a role marker appears.
+    EOS tokens (``<|im_end|>``) are stripped by ``skip_special_tokens=True``.
+    Instruct models sometimes generate the role prefix as literal text in the
+    first token, so we strip those leading markers.
     """
     text = tokenizer.decode(ids, skip_special_tokens=True)
-    # Find the first role prefix after stripping leading one
     for prefix in ("assistant\n", "user\n", "system\n"):
         if text.startswith(prefix):
             text = text[len(prefix):]
-            break
-    # Truncate at any role boundary (ChatML line pattern) in the middle
-    for marker in ("\nuser\n", "\nassistant\n", "\nsystem\n"):
-        idx = text.find(marker)
-        if idx > 0:
-            text = text[:idx]
             break
     return text.strip()
 
@@ -322,7 +315,9 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
         np.random.seed(seed)
 
     t0 = time.time()
-    out = model.generate_gpu(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+    out = model.generate_gpu(token_ids, max_new_tokens=max_tokens,
+                             temperature=temperature, top_k=top_k,
+                             eos_token_id=tokenizer.eos_token_id)
     dt = time.time() - t0
 
     new_ids = out[0, seq_len:].tolist()
@@ -374,6 +369,7 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
             for token_id, step_time in model.generate_stream_gpu(
                 token_ids, max_new_tokens=max_tokens,
                 temperature=temperature, top_k=top_k,
+                eos_token_id=tokenizer.eos_token_id,
             ):
                 loop.call_soon_threadsafe(
                     queue.put_nowait, ("token", token_id, step_time)
@@ -449,6 +445,7 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
             for token_id, step_time in model.generate_stream_gpu(
                 token_ids, max_new_tokens=max_tokens,
                 temperature=temperature, top_k=top_k,
+                eos_token_id=tokenizer.eos_token_id,
             ):
                 loop.call_soon_threadsafe(
                     queue.put_nowait, ("token", token_id, step_time)
