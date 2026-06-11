@@ -166,6 +166,74 @@ def query_chat(messages: list[dict], max_tokens: int = 50, temperature: float = 
         return {"error": f"Connection failed: {e.reason}"}
 
 
+def query_chat_stream(messages: list[dict], max_tokens: int = 50, temperature: float = 0.0,
+                      top_k: int = 0, seed: int | None = None,
+                      host: str = "localhost", port: int = 8000):
+    """Send a streaming /v1/chat/completions request, yield delta text."""
+    body = {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_k": top_k,
+        "stream": True,
+    }
+    if seed is not None:
+        body["seed"] = seed
+
+    req = urllib.request.Request(
+        f"http://{host}:{port}/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                line = line.decode().strip()
+                if not line or line == "data: [DONE]":
+                    if line == "data: [DONE]":
+                        yield None, True, None
+                    continue
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    usage = data.get("usage")
+                    if usage:
+                        yield None, True, usage
+                        return
+                    delta = data.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content, False, None
+    except urllib.error.HTTPError as e:
+        yield f"[HTTP {e.code}]", True, None
+    except urllib.error.URLError as e:
+        yield f"[Connection failed]", True, None
+
+
+def _run_stream_chat(args):
+    """Run a streaming chat, printing tokens as they arrive."""
+    messages = [{"role": "user", "content": args.prompt}]
+    if args.system:
+        messages.insert(0, {"role": "system", "content": args.system})
+    print(f"User: {args.prompt}")
+    print("AI: ", end="", flush=True)
+    usage = None
+    for token_text, is_last, chunk_usage in query_chat_stream(
+        messages, args.max_tokens, args.temperature,
+        args.top_k, args.seed, args.host, args.port,
+    ):
+        if chunk_usage is not None:
+            usage = chunk_usage
+        elif token_text:
+            print(token_text, end="", flush=True)
+    print()
+    if usage:
+        print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+              f"{usage.get('completion_tokens', '?')} = "
+              f"{usage.get('total_tokens', '?')} tokens "
+              f"({usage.get('time_seconds', '?')}s)")
+    return 0
+
+
 def _run_repl(args):
     """Interactive completions REPL — fresh completion per turn, no chat history."""
     mode = "streaming" if args.stream else "batch"
@@ -232,7 +300,7 @@ def main():
     p.add_argument("--repl", action="store_true",
                    help="Interactive completions REPL (fresh completion per turn)")
     p.add_argument("--stream", action="store_true",
-                   help="Stream tokens as they are generated (completions only)")
+                   help="Stream tokens as they are generated (completions and chat)")
     p.add_argument("--system", default=None,
                    help="System prompt for chat mode")
     p.add_argument("--max-tokens", type=int, default=20)
@@ -251,7 +319,7 @@ def main():
         sys.exit(_run_repl(args))
 
     if args.stream and args.chat:
-        p.error("--stream is not yet supported with --chat")
+        sys.exit(_run_stream_chat(args))
 
     if args.stream:
         sys.exit(_run_stream_completion(args))
