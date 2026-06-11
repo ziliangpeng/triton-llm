@@ -50,59 +50,7 @@ def _gemm_kernel(
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 
-def gemm(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """
-    Perform matrix multiplication C = A @ B using Triton.
-    A: (M, K), B: (K, N) -> C: (M, N)
-
-    Note: Input arrays are converted to C-contiguous to ensure
-    correct memory layout when transferred to the device.
-    Strides are derived dynamically from the actual array metadata.
-    """
-    assert a.ndim == 2 and b.ndim == 2
-    M, K = a.shape
-    K2, N = b.shape
-    assert K == K2, "Inner dimensions must match"
-
-    # Handle zero-dimension edge cases: return zero matrix to avoid GPU allocator issues
-    if K == 0 or M == 0 or N == 0:
-        return np.zeros((M, N), dtype=np.float32)
-
-    # Ensure C-contiguous float32 to avoid data corruption on device
-    a = np.require(a, dtype=np.float32, requirements=['C_CONTIGUOUS'])
-    b = np.require(b, dtype=np.float32, requirements=['C_CONTIGUOUS'])
-
-    # Derive strides from actual array metadata (in elements, not bytes)
-    stride_am, stride_ak = a.strides[0] // a.itemsize, a.strides[1] // a.itemsize
-    stride_bk, stride_bn = b.strides[0] // b.itemsize, b.strides[1] // b.itemsize
-
-    a_dev = gpu.to_device(a)
-    b_dev = gpu.to_device(b)
-    c_dev = gpu.allocate((M, N), np.float32)
-
-    # For output C we know it's contiguous
-    stride_cm, stride_cn = N, 1
-
-    BLOCK_M = 64
-    BLOCK_N = 64
-    BLOCK_K = 32
-
-    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
-
-    _gemm_kernel[grid](
-        a_dev.data_ptr(), b_dev.data_ptr(), c_dev.data_ptr(),
-        M, N, K,
-        stride_am, stride_ak,
-        stride_bk, stride_bn,
-        stride_cm, stride_cn,
-        BLOCK_M, BLOCK_N, BLOCK_K,
-    )
-
-    gpu.synchronize()
-    return gpu.to_host(c_dev)
-
-
-def gemm_device(
+def gemm(
     h_dev: "gpu.DeviceTensor",
     w_dev: "gpu.DeviceTensor",
     out_dev: "gpu.DeviceTensor | None" = None,

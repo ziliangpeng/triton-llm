@@ -123,118 +123,6 @@ def precompute_cos_sin(
     return cos, sin
 
 
-def apply_rope(
-    x: np.ndarray,
-    cos: np.ndarray,
-    sin: np.ndarray,
-    seq_len: int,
-    position_offset: int = 0,
-) -> np.ndarray:
-    """
-    Apply Rotary Position Embedding to a single tensor (Q or K) in-place on GPU.
-
-    Parameters
-    ----------
-    x : (n_rows, d_k) float32 array.
-        A single Q or K tensor, already projected. Leading dimensions are
-        flattened internally, so 3D (batch, n_head, seq, d_k) and higher
-        shapes are all supported.
-    cos : (max_seq, d_k // 2) float32 array — half-packed cos table.
-    sin : (max_seq, d_k // 2) float32 array — half-packed sin table.
-    seq_len : int
-        The actual sequence length. Used to determine position:
-        ``pos = (row % seq_len) + position_offset``.
-    position_offset : int
-        Position offset for KV cache decode (default: 0).
-
-    Returns
-    -------
-    y : same shape and dtype as ``x``.
-    """
-    if x.ndim < 2:
-        raise ValueError(f"apply_rope expects at least a 2D input, got {x.ndim}D")
-    if x.shape[-1] < 2 or x.shape[-1] % 2 != 0:
-        raise ValueError(f"Last dimension (d_k) must be even and >= 2, got {x.shape[-1]}")
-    if cos.ndim != 2 or sin.ndim != 2:
-        raise ValueError(f"cos and sin must be 2D arrays, got cos.ndim={cos.ndim}, sin.ndim={sin.ndim}")
-    if cos.shape != sin.shape:
-        raise ValueError(f"cos and sin must have same shape, got cos.shape={cos.shape}, sin.shape={sin.shape}")
-    if seq_len < 1:
-        raise ValueError(f"seq_len must be >= 1, got {seq_len}")
-    if position_offset < 0:
-        raise ValueError(f"position_offset must be >= 0, got {position_offset}")
-    if position_offset + seq_len > cos.shape[0]:
-        raise ValueError(
-            f"position_offset ({position_offset}) + seq_len ({seq_len}) exceeds "
-            f"cos table max_seq ({cos.shape[0]})"
-        )
-
-    orig_shape = x.shape
-    d_k = orig_shape[-1]
-    half = d_k // 2
-
-    if cos.shape[-1] != half:
-        raise ValueError(
-            f"cos.shape[-1]={cos.shape[-1]} must equal d_k//2={half}"
-        )
-    if sin.shape[-1] != half:
-        raise ValueError(
-            f"sin.shape[-1]={sin.shape[-1]} must equal d_k//2={half}"
-        )
-
-    # Validate that for 3D+ inputs, the second-to-last dim equals seq_len.
-    if x.ndim >= 3:
-        if x.shape[-2] != seq_len:
-            raise ValueError(
-                f"For multi-dim input, second-to-last dim ({x.shape[-2]}) must "
-                f"equal seq_len ({seq_len})"
-            )
-
-    # Flatten all leading dimensions so the kernel sees (n_rows, d_k).
-    x = np.ascontiguousarray(x.reshape(-1, d_k), dtype=np.float32)
-    cos = np.ascontiguousarray(cos, dtype=np.float32)
-    sin = np.ascontiguousarray(sin, dtype=np.float32)
-    n_rows = x.shape[0]
-
-    # Handle empty input (n_rows == 0): return empty array with correct shape.
-    if n_rows == 0:
-        return np.empty(orig_shape, dtype=np.float32)
-
-    if n_rows % seq_len != 0:
-        raise ValueError(
-            f"Total rows ({n_rows}) must be a multiple of seq_len ({seq_len})"
-        )
-
-    # Row stride in elements: guaranteeed d_k after flatten + contiguous.
-    stride_x = d_k
-
-    # Block size for tl.arange: next power of 2 of half (supports odd d_k/2).
-    half = d_k // 2
-    block_size = triton.next_power_of_2(half)
-
-    x_dev = gpu.to_device(x)
-    cos_dev = gpu.to_device(cos)
-    sin_dev = gpu.to_device(sin)
-
-    grid = (n_rows,)
-
-    _rope_kernel[grid](
-        x_dev.data_ptr(),
-        cos_dev.data_ptr(),
-        sin_dev.data_ptr(),
-        n_rows,
-        seq_len,
-        stride_x,
-        position_offset,
-        d_k,
-        block_size,
-    )
-
-    # Explicit device synchronize to ensure kernel completion before host read.
-    gpu.synchronize()
-    return gpu.to_host(x_dev).reshape(orig_shape)
-
-
 def precompute_cos_sin_device(
     max_seq_len: int,
     d_k: int,
@@ -262,7 +150,7 @@ def precompute_cos_sin_device(
     return gpu.to_device(cos_np), gpu.to_device(sin_np)
 
 
-def apply_rope_device(
+def apply_rope(
     x_dev: "gpu.DeviceTensor",
     cos_dev: "gpu.DeviceTensor",
     sin_dev: "gpu.DeviceTensor",

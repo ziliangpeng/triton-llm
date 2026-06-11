@@ -6,7 +6,8 @@ position offset behavior, empty input, precompute correctness, and single-row.
 """
 
 import numpy as np
-from triton_llm.kernels.rope import apply_rope, precompute_cos_sin
+from tests._kernel_helpers import apply_rope_cpu
+from triton_llm.kernels.rope import precompute_cos_sin
 
 
 def rope_ref(x, cos, sin, seq_len, position_offset=0):
@@ -57,7 +58,7 @@ def test_rope_correctness():
         cos, sin = precompute_cos_sin(max_seq, d_k, theta=100000.0)
         x = np.random.randn(n_rows, d_k).astype(np.float32)
 
-        out = apply_rope(x, cos, sin, seq_len=seq_len)
+        out = apply_rope_cpu(x, cos, sin, seq_len=seq_len)
         ref = rope_ref(x, cos, sin, seq_len)
 
         max_diff = float(np.abs(out - ref).max())
@@ -93,7 +94,7 @@ def test_rope_identity_zero_pos():
     print(f"  cos[0] close to 1: {cos_ones}, sin[0] close to 0: {sin_zeros}")
 
     x = np.random.randn(n_rows, d_k).astype(np.float32)
-    out = apply_rope(x, cos, sin, seq_len=seq_len)
+    out = apply_rope_cpu(x, cos, sin, seq_len=seq_len)
 
     max_diff = float(np.abs(out - x).max())
     passed = np.allclose(out, x, atol=1e-4, rtol=1e-4)
@@ -126,7 +127,7 @@ def test_rope_position_offset():
     x = np.random.randn(n_rows, d_k).astype(np.float32)
 
     # Apply with offset.
-    out_with_offset = apply_rope(x, cos, sin, seq_len=seq_len, position_offset=offset)
+    out_with_offset = apply_rope_cpu(x, cos, sin, seq_len=seq_len, position_offset=offset)
 
     # The reference: for row r, pos = r + offset, which should equal
     # applying to position r+offset directly.
@@ -140,7 +141,7 @@ def test_rope_position_offset():
 
     # Additional test: offset=0 vs look directly at cos/sin table.
     # Position 5 with offset 0 should be same as row 5.
-    out_offset_0 = apply_rope(x, cos, sin, seq_len=seq_len, position_offset=0)
+    out_offset_0 = apply_rope_cpu(x, cos, sin, seq_len=seq_len, position_offset=0)
     ref_offset_0 = rope_ref(x, cos, sin, seq_len, position_offset=0)
     max_diff2 = float(np.abs(out_offset_0 - ref_offset_0).max())
     passed2 = np.allclose(out_offset_0, ref_offset_0, atol=1e-4, rtol=1e-4)
@@ -161,7 +162,7 @@ def test_rope_empty():
     cos, sin = precompute_cos_sin(8, d_k)
     x = np.empty((0, d_k), dtype=np.float32)
 
-    out = apply_rope(x, cos, sin, seq_len=1)
+    out = apply_rope_cpu(x, cos, sin, seq_len=1)
     passed = out.shape == (0, d_k) and out.dtype == np.float32 and out.size == 0
     print(f"[{'PASS' if passed else 'FAIL'}] n_rows=0 empty input | shape={out.shape}")
     assert passed, f"Empty input failed, shape={out.shape}"
@@ -235,7 +236,7 @@ def test_rope_single_element():
     cos, sin = precompute_cos_sin(8, d_k)
     x = np.random.randn(1, d_k).astype(np.float32)
 
-    out = apply_rope(x, cos, sin, seq_len=seq_len)
+    out = apply_rope_cpu(x, cos, sin, seq_len=seq_len)
     ref = rope_ref(x, cos, sin, seq_len)
 
     max_diff = float(np.abs(out - ref).max())
@@ -258,14 +259,14 @@ def test_rope_input_validation():
 
     # 1D input.
     try:
-        apply_rope(np.random.randn(64).astype(np.float32), cos, sin, seq_len=1)
+        apply_rope_cpu(np.random.randn(64).astype(np.float32), cos, sin, seq_len=1)
         assert False, "Should have rejected 1D input"
     except ValueError:
         print("[PASS] 1D input correctly rejected")
 
     # Odd d_k.
     try:
-        apply_rope(np.random.randn(4, 63).astype(np.float32), cos[:, :31], sin[:, :31], seq_len=1)
+        apply_rope_cpu(np.random.randn(4, 63).astype(np.float32), cos[:, :31], sin[:, :31], seq_len=1)
         assert False, "Should have rejected odd d_k"
     except ValueError:
         print("[PASS] Odd d_k correctly rejected")
@@ -273,14 +274,14 @@ def test_rope_input_validation():
     # Bad cos/sin shape.
     try:
         cos_bad = np.empty((8, 64), dtype=np.float32)
-        apply_rope(np.random.randn(4, 64).astype(np.float32), cos_bad, sin, seq_len=1)
+        apply_rope_cpu(np.random.randn(4, 64).astype(np.float32), cos_bad, sin, seq_len=1)
         assert False, "Should have rejected mismatched cos shape"
     except ValueError:
         print("[PASS] Mismatched cos shape correctly rejected")
 
     # seq_len < 1.
     try:
-        apply_rope(np.random.randn(4, 64).astype(np.float32), cos, sin, seq_len=0)
+        apply_rope_cpu(np.random.randn(4, 64).astype(np.float32), cos, sin, seq_len=0)
         assert False, "Should have rejected seq_len=0"
     except ValueError:
         print("[PASS] seq_len=0 correctly rejected")
@@ -288,21 +289,21 @@ def test_rope_input_validation():
     # position_offset + seq_len exceeds cos table.
     try:
         cos_small, sin_small = precompute_cos_sin(4, d_k)
-        apply_rope(np.random.randn(4, 64).astype(np.float32), cos_small, sin_small, seq_len=4, position_offset=1)
+        apply_rope_cpu(np.random.randn(4, 64).astype(np.float32), cos_small, sin_small, seq_len=4, position_offset=1)
         assert False, "Should have rejected offset that exceeds cos table"
     except ValueError:
         print("[PASS] Offset exceeding cos table correctly rejected")
 
     # position_offset < 0.
     try:
-        apply_rope(np.random.randn(4, 64).astype(np.float32), cos, sin, seq_len=1, position_offset=-1)
+        apply_rope_cpu(np.random.randn(4, 64).astype(np.float32), cos, sin, seq_len=1, position_offset=-1)
         assert False, "Should have rejected negative position_offset"
     except ValueError:
         print("[PASS] Negative offset correctly rejected")
 
     # n_rows not a multiple of seq_len.
     try:
-        apply_rope(np.random.randn(5, 64).astype(np.float32), cos, sin, seq_len=2)
+        apply_rope_cpu(np.random.randn(5, 64).astype(np.float32), cos, sin, seq_len=2)
         assert False, "Should have rejected n_rows not a multiple of seq_len"
     except ValueError:
         print("[PASS] n_rows not a multiple of seq_len correctly rejected")
@@ -325,7 +326,7 @@ def test_rope_theta():
         cos, sin = precompute_cos_sin(16, d_k, theta=theta)
         x = np.random.randn(n_rows, d_k).astype(np.float32)
 
-        out = apply_rope(x, cos, sin, seq_len=seq_len)
+        out = apply_rope_cpu(x, cos, sin, seq_len=seq_len)
         ref = rope_ref(x, cos, sin, seq_len)
 
         max_diff = float(np.abs(out - ref).max())
@@ -350,7 +351,7 @@ def test_rope_multidim():
     cos, sin = precompute_cos_sin(max_seq, D)
     x = np.random.randn(B, H, S, D).astype(np.float32)
 
-    out = apply_rope(x, cos, sin, seq_len=S)
+    out = apply_rope_cpu(x, cos, sin, seq_len=S)
 
     # Reference: flatten, apply, reshape.
     flat = x.reshape(-1, D)

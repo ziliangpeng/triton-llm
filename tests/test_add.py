@@ -7,7 +7,7 @@ dtype promotion, and shape-mismatch error handling.
 """
 
 import numpy as np
-from triton_llm.kernels.add import add
+from tests._kernel_helpers import add_cpu
 
 
 def test_add_correctness():
@@ -25,7 +25,7 @@ def test_add_correctness():
     for size in test_sizes:
         x = np.random.randn(size).astype(np.float32)
         y = np.random.randn(size).astype(np.float32)
-        out = add(x, y)
+        out = add_cpu(x, y)
         ref = x + y
 
         max_diff = float(np.abs(out - ref).max())
@@ -42,7 +42,7 @@ def test_add_edge_cases():
     # Large positive values (multi-block check)
     x_large = np.array([1e3, 1e6, 1e10], dtype=np.float32)
     y_large = np.array([2e3, 5e5, 2e10], dtype=np.float32)
-    out_large = add(x_large, y_large)
+    out_large = add_cpu(x_large, y_large)
     ref_large = x_large + y_large
     max_diff = float(np.abs(out_large - ref_large).max())
     passed = np.allclose(out_large, ref_large, atol=1e-3, rtol=1e-3)
@@ -52,7 +52,7 @@ def test_add_edge_cases():
     # Large negative values (multi-block check)
     x_neg = np.array([-1e3, -1e6, -1e10], dtype=np.float32)
     y_neg = np.array([-2e3, -5e5, -2e10], dtype=np.float32)
-    out_neg = add(x_neg, y_neg)
+    out_neg = add_cpu(x_neg, y_neg)
     ref_neg = x_neg + y_neg
     max_diff = float(np.abs(out_neg - ref_neg).max())
     passed = np.allclose(out_neg, ref_neg, atol=1e-3, rtol=1e-3)
@@ -62,7 +62,7 @@ def test_add_edge_cases():
     # All zeros
     x_zero = np.zeros(128, dtype=np.float32)
     y_zero = np.zeros(128, dtype=np.float32)
-    out_zero = add(x_zero, y_zero)
+    out_zero = add_cpu(x_zero, y_zero)
     ref_zero = x_zero + y_zero
     max_diff = float(np.abs(out_zero - ref_zero).max())
     passed = np.allclose(out_zero, ref_zero, atol=1e-4)
@@ -72,7 +72,7 @@ def test_add_edge_cases():
     # All same value
     x_same = np.full(256, 3.14159, dtype=np.float32)
     y_same = np.full(256, 2.71828, dtype=np.float32)
-    out_same = add(x_same, y_same)
+    out_same = add_cpu(x_same, y_same)
     ref_same = x_same + y_same
     max_diff = float(np.abs(out_same - ref_same).max())
     passed = np.allclose(out_same, ref_same, atol=1e-4)
@@ -87,14 +87,14 @@ def test_add_empty_array():
     # 1D empty arrays
     x = np.array([], dtype=np.float32)
     y = np.array([], dtype=np.float32)
-    out = add(x, y)
+    out = add_cpu(x, y)
     assert out.shape == (0,), f"Expected shape (0,), got {out.shape}"
     assert out.dtype == np.float32, f"Expected float32, got {out.dtype}"
 
     # Multi-dimensional empty arrays
     x_multi = np.empty((0, 10, 5), dtype=np.float32)
     y_multi = np.empty((0, 10, 5), dtype=np.float32)
-    out_multi = add(x_multi, y_multi)
+    out_multi = add_cpu(x_multi, y_multi)
     assert out_multi.shape == (0, 10, 5), f"Expected shape (0, 10, 5), got {out_multi.shape}"
     assert out_multi.dtype == np.float32, f"Expected float32, got {out_multi.dtype}"
 
@@ -108,7 +108,7 @@ def test_add_multidim():
     shape = (4, 16, 128)
     x = np.random.randn(*shape).astype(np.float32)
     y = np.random.randn(*shape).astype(np.float32)
-    out = add(x, y)
+    out = add_cpu(x, y)
     ref = x + y
     assert out.shape == shape, f"Shape mismatch: {out.shape} vs {shape}"
     max_diff = float(np.abs(out - ref).max())
@@ -127,7 +127,7 @@ def test_add_non_contiguous():
     col_x = matrix_x[:, 3]  # non-contiguous column slice
     col_y = matrix_y[:, 3]
     assert not col_x.flags["C_CONTIGUOUS"], "Test precondition failed: column slice should be non-contiguous"
-    out = add(col_x, col_y)
+    out = add_cpu(col_x, col_y)
     ref = col_x + col_y
     max_diff = float(np.abs(out - ref).max())
     passed = np.allclose(out, ref, atol=1e-4)
@@ -137,7 +137,7 @@ def test_add_non_contiguous():
     # Also test a row slice (contiguous, but good for completeness).
     row_x = matrix_x[3, :]
     row_y = matrix_y[3, :]
-    out_row = add(row_x, row_y)
+    out_row = add_cpu(row_x, row_y)
     ref_row = row_x + row_y
     passed_row = np.allclose(out_row, ref_row, atol=1e-4)
     print(f"[{'PASS' if passed_row else 'FAIL'}] Row slice       | max_diff={float(np.abs(out_row - ref_row).max()):.2e}")
@@ -151,7 +151,7 @@ def test_add_dtype_conversion():
     # int32 input.
     x_int = np.array([-2, 0, 1, 3], dtype=np.int32)
     y_int = np.array([4, -1, 2, 5], dtype=np.int32)
-    out_int = add(x_int, y_int)
+    out_int = add_cpu(x_int, y_int)
     assert out_int.dtype == np.float32, f"Expected float32, got {out_int.dtype}"
     ref_int = x_int.astype(np.float32) + y_int.astype(np.float32)
     assert np.allclose(out_int, ref_int, atol=1e-4), "int32 add failed"
@@ -159,7 +159,7 @@ def test_add_dtype_conversion():
     # float64 input.
     x_f64 = np.array([-1.5, 0.0, 2.0, 3.14], dtype=np.float64)
     y_f64 = np.array([2.5, 1.0, -1.0, 0.86], dtype=np.float64)
-    out_f64 = add(x_f64, y_f64)
+    out_f64 = add_cpu(x_f64, y_f64)
     assert out_f64.dtype == np.float32, f"Expected float32, got {out_f64.dtype}"
     ref_f64 = x_f64.astype(np.float32) + y_f64.astype(np.float32)
     assert np.allclose(out_f64, ref_f64, atol=1e-4), "float64 add failed"
@@ -175,7 +175,7 @@ def test_add_shape_mismatch():
     y = np.array([1.0, 2.0], dtype=np.float32)
 
     try:
-        add(x, y)
+        add_cpu(x, y)
         raise RuntimeError("Expected AssertionError for shape mismatch")
     except AssertionError:
         print("[PASS] Shape mismatch correctly raises AssertionError")
