@@ -601,9 +601,11 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ) -> np.ndarray:
         """Alias for ``generate_gpu``. Provided for backward compatibility."""
-        return self.generate_gpu(token_ids, max_new_tokens, temperature, top_k)
+        return self.generate_gpu(token_ids, max_new_tokens, temperature, top_k,
+                                 eos_token_id=eos_token_id)
 
     def generate_stream(
         self,
@@ -611,6 +613,8 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ):
         """Alias for ``generate_stream_gpu``. Provided for backward compatibility."""
-        yield from self.generate_stream_gpu(token_ids, max_new_tokens, temperature, top_k)
+        yield from self.generate_stream_gpu(token_ids, max_new_tokens, temperature,
+                                            top_k, eos_token_id=eos_token_id)
