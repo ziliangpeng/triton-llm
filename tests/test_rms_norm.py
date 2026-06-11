@@ -136,7 +136,7 @@ def test_rms_norm_weight_shape():
     try:
         rms_norm_cpu(np.random.randn(4, 0).astype(np.float32), np.ones(0, dtype=np.float32))
         assert False, "Should have rejected N=0"
-    except AssertionError:
+    except (ValueError, AssertionError):
         print("[PASS] N=0 correctly rejected")
 
 
