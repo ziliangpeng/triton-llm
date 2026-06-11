@@ -166,6 +166,61 @@ def query_chat(messages: list[dict], max_tokens: int = 50, temperature: float = 
         return {"error": f"Connection failed: {e.reason}"}
 
 
+def _run_repl(args):
+    """Interactive completions REPL — fresh completion per turn, no chat history."""
+    mode = "streaming" if args.stream else "batch"
+    print(f"SmolLM2 REPL  (host={args.host}:{args.port}, max_tokens={args.max_tokens}, mode={mode})")
+    print("Type your prompt.  Ctrl+D / Ctrl+C to exit.\n")
+
+    while True:
+        try:
+            prompt = input(">>> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not prompt.strip():
+            continue
+
+        if args.stream:
+            usage = None
+            for token_text, is_last, chunk_usage in query_completions_stream(
+                prompt, args.max_tokens, args.temperature,
+                args.top_k, args.seed, args.host, args.port,
+            ):
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                    break
+                elif token_text:
+                    print(token_text, end="", flush=True)
+            print()
+            if usage:
+                ttft = usage.get("ttft_ms")
+                tpot = usage.get("tpot_ms")
+                tps = usage.get("tokens_per_second")
+                parts = [
+                    f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+                    f"{usage.get('completion_tokens', '?')} = "
+                    f"{usage.get('total_tokens', '?')} tokens "
+                    f"({usage.get('time_seconds', '?')}s)",
+                ]
+                if ttft is not None:
+                    parts.append(f"TTFT {ttft}ms")
+                if tpot is not None:
+                    parts.append(f"TPOT {tpot}ms")
+                if tps is not None:
+                    parts.append(f"{tps} tok/s")
+                print(" | ".join(parts))
+        else:
+            result = query_completions(prompt, args.max_tokens, args.temperature,
+                                       args.top_k, args.seed, args.host, args.port)
+            if "error" in result:
+                print(f"Error: {result['error']}")
+            else:
+                print(result.get("text", ""))
+        print()
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description="Query SmolLM2 HTTP server")
     p.add_argument("--prompt", default="The capital of France is",
@@ -174,6 +229,8 @@ def main():
                    help="Use /v1/chat/completions endpoint")
     p.add_argument("--interactive", action="store_true",
                    help="Interactive chat session (implies --chat)")
+    p.add_argument("--repl", action="store_true",
+                   help="Interactive completions REPL (fresh completion per turn)")
     p.add_argument("--stream", action="store_true",
                    help="Stream tokens as they are generated (completions only)")
     p.add_argument("--system", default=None,
@@ -189,6 +246,9 @@ def main():
 
     if args.interactive:
         sys.exit(_run_interactive(args))
+
+    if args.repl:
+        sys.exit(_run_repl(args))
 
     if args.stream and args.chat:
         p.error("--stream is not yet supported with --chat")

@@ -1,4 +1,4 @@
-"""Internal SSE streaming helpers — shared by client.py and repl.py."""
+"""Internal SSE streaming helpers — shared by client.py."""
 
 import json
 
