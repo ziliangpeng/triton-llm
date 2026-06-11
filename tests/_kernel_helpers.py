@@ -28,13 +28,24 @@ def gemm_cpu(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def rms_norm_cpu(x: np.ndarray, weight: np.ndarray, eps: float = 1e-5) -> np.ndarray:
-    """Test helper: call GPU rms_norm with numpy arrays."""
+    """Test helper: call GPU rms_norm with numpy arrays.
+
+    Flattens leading dimensions for inputs with ndim > 2, then reshapes
+    the result back to the original shape.
+    """
+    orig_shape = x.shape
+    needs_reshape = x.ndim > 2
+    if needs_reshape:
+        x = x.reshape(-1, orig_shape[-1])
     x_dev = gpu.to_device(np.require(x, dtype=np.float32, requirements=["C_CONTIGUOUS"]))
     w_dev = gpu.to_device(np.require(weight, dtype=np.float32, requirements=["C_CONTIGUOUS"]))
     out_dev = gpu.allocate(x.shape, np.float32)
     _rms_norm(x_dev, w_dev, out_dev, eps=eps)
     gpu.synchronize()
-    return gpu.to_host(out_dev)
+    out = gpu.to_host(out_dev)
+    if needs_reshape:
+        out = out.reshape(orig_shape)
+    return out
 
 
 def apply_rope_cpu(
@@ -46,15 +57,25 @@ def apply_rope_cpu(
 ) -> np.ndarray:
     """Test helper: call GPU apply_rope with numpy arrays.
 
+    Flattens leading dimensions for inputs with ndim > 2, then reshapes
+    the result back to the original shape.
+
     Note: cos/sin must be numpy arrays from precompute_cos_sin().
     They are moved to GPU inside this helper.
     """
+    orig_shape = x.shape
+    needs_reshape = x.ndim > 2
+    if needs_reshape:
+        x = x.reshape(-1, orig_shape[-1])
     x_dev = gpu.to_device(np.require(x, dtype=np.float32, requirements=["C_CONTIGUOUS"]))
     cos_dev = gpu.to_device(np.require(cos, dtype=np.float32, requirements=["C_CONTIGUOUS"]))
     sin_dev = gpu.to_device(np.require(sin, dtype=np.float32, requirements=["C_CONTIGUOUS"]))
     _apply_rope(x_dev, cos_dev, sin_dev, seq_len=seq_len, position_offset=position_offset)
     gpu.synchronize()
-    return gpu.to_host(x_dev)
+    out = gpu.to_host(x_dev)
+    if needs_reshape:
+        out = out.reshape(orig_shape)
+    return out
 
 
 def swiglu_cpu(gate: np.ndarray, up: np.ndarray) -> np.ndarray:

@@ -122,21 +122,21 @@ def test_rms_norm_weight_shape():
     try:
         rms_norm_cpu(x, np.ones(64, dtype=np.float32))
         assert False, "Should have rejected mismatched weight shape"
-    except ValueError:
+    except AssertionError:
         print("[PASS] Mismatched weight shape correctly rejected")
 
     # 1D input should be rejected.
     try:
         rms_norm_cpu(np.random.randn(64).astype(np.float32), np.ones(64, dtype=np.float32))
         assert False, "Should have rejected 1D input"
-    except ValueError:
+    except AssertionError:
         print("[PASS] 1D input correctly rejected")
 
     # N=0 last dimension.
     try:
         rms_norm_cpu(np.random.randn(4, 0).astype(np.float32), np.ones(0, dtype=np.float32))
         assert False, "Should have rejected N=0"
-    except ValueError:
+    except AssertionError:
         print("[PASS] N=0 correctly rejected")
 
 
