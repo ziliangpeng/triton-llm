@@ -236,7 +236,7 @@ def _run_stream_chat(args):
 
 def _run_repl(args):
     """Interactive completions REPL — fresh completion per turn, no chat history."""
-    mode = "streaming" if args.stream else "batch"
+    mode = "streaming" if not args.no_stream else "batch"
     print(f"SmolLM2 REPL  (host={args.host}:{args.port}, max_tokens={args.max_tokens}, mode={mode})")
     print("Type your prompt.  Ctrl+D / Ctrl+C to exit.\n")
 
@@ -249,7 +249,7 @@ def _run_repl(args):
         if not prompt.strip():
             continue
 
-        if args.stream:
+        if not args.no_stream:
             usage = None
             for token_text, is_last, chunk_usage in query_completions_stream(
                 prompt, args.max_tokens, args.temperature,
@@ -301,8 +301,8 @@ def main():
                    help="Interactive chat session (default)")
     p.add_argument("--repl", action="store_true",
                    help="Interactive completions REPL")
-    p.add_argument("--stream", action="store_true",
-                   help="Stream tokens as they are generated")
+    p.add_argument("--no-stream", action="store_true",
+                   help="Disable streaming (batch mode)")
     p.add_argument("--system", default=None,
                    help="System prompt for chat mode")
     p.add_argument("--max-tokens", type=int, default=80)
@@ -322,10 +322,10 @@ def main():
     if args.repl:
         sys.exit(_run_repl(args))
 
-    if args.stream and args.chat:
+    if not args.no_stream and args.chat:
         sys.exit(_run_stream_chat(args))
 
-    if args.stream and args.completion:
+    if not args.no_stream and args.completion:
         sys.exit(_run_stream_completion(args))
 
     if args.completion:
@@ -345,7 +345,7 @@ def main():
 
 def _run_interactive(args):
     """Run an interactive chat session. Returns 0 on success, 1 on error."""
-    mode = "streaming" if args.stream else "batch"
+    mode = "streaming" if not args.no_stream else "batch"
     print(f"\nInteractive chat ({mode}, Ctrl+D, Ctrl+C to exit)\n")
     messages = []
     if args.system:
@@ -363,7 +363,7 @@ def _run_interactive(args):
 
         messages.append({"role": "user", "content": user_input})
 
-        if args.stream:
+        if not args.no_stream:
             print("AI:  ", end="", flush=True)
             usage = None
             full_text = ""
