@@ -751,14 +751,10 @@ class SmolLM2ForCausalLM:
         t0 = time.time()
         logits = self._forward_cached_gpu(token_ids)
 
-        tokens = token_ids.copy()
         t_decode_start: float = 0.0
         for step in range(max_new_tokens):
             next_logits = logits[0, -1, :]
             next_token = self._sample(next_logits, temperature, top_k)
-            tokens = np.concatenate(
-                [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
-            )
 
             if step == 0:
                 step_time = time.time() - t0  # TTFT: prefill → first token
