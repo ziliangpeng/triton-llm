@@ -358,20 +358,13 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
         """Runs in a background thread — consumes the sync generator."""
         try:
             if use_gpu:
-                # GPU path: generate all tokens at once, yield one by one
-                t_prefill = time.time()
-                out_gpu = model.generate_gpu(
+                # GPU path: real token-by-token streaming via generate_stream_gpu()
+                for token_id, step_time in model.generate_stream_gpu(
                     token_ids, max_new_tokens=max_tokens,
                     temperature=temperature, top_k=top_k,
-                )
-                t_after = time.time()
-                # First token = prefill; rest = decode (approximate per-token)
-                new_tokens = out_gpu[0, seq_len:].tolist()
-                per_step = (t_after - t_prefill) / max(len(new_tokens), 1)
-                for i, tid in enumerate(new_tokens):
-                    step_time = t_after - t_prefill if i == 0 else per_step
+                ):
                     loop.call_soon_threadsafe(
-                        queue.put_nowait, ("token", tid, step_time)
+                        queue.put_nowait, ("token", token_id, step_time)
                     )
             else:
                 for token_id, step_time in model.generate_stream(

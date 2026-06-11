@@ -374,6 +374,65 @@ def test_gpu_resident_full_trip():
     return True
 
 
+def test_gpu_stream_generation():
+    """Verify generate_stream_gpu() yields correct tokens with real timing."""
+    from smollm2_triton.config import SmolLM2Config
+    from smollm2_triton.model import SmolLM2ForCausalLM
+    import numpy as np
+
+    config = SmolLM2Config(
+        vocab_size=100,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+        max_position_embeddings=512,
+    )
+    np.random.seed(42)
+    weights = _make_random_weights(config)
+
+    prompt = np.array([[5, 12, 7]], dtype=np.int32)
+    try:
+        model = SmolLM2ForCausalLM(config, weights)
+        stream_tokens = []
+        stream_times = []
+        for token_id, step_time in model.generate_stream_gpu(
+            prompt, max_new_tokens=5, temperature=0.0,
+        ):
+            stream_tokens.append(token_id)
+            stream_times.append(step_time)
+    except RuntimeError as e:
+        err_str = str(e)
+        if any(kw in err_str for kw in
+               ["No supported GPU runtime found", "GPU runtime error", "Failed to load"]):
+            print("  SKIP: No GPU available  [SKIP]")
+            return True
+        raise
+
+    # Verify correct number of tokens
+    assert len(stream_tokens) == 5, f"Expected 5 tokens, got {len(stream_tokens)}"
+
+    # Verify timing: TTFT > 0, subsequent step times > 0
+    assert stream_times[0] > 0, f"TTFT must be > 0, got {stream_times[0]}"
+    for i in range(1, len(stream_times)):
+        assert stream_times[i] > 0, f"TPOT step {i} must be > 0, got {stream_times[i]}"
+
+    # Verify token correctness vs generate_gpu()
+    np.random.seed(42)
+    model2 = SmolLM2ForCausalLM(config, weights)
+    out_gpu = model2.generate_gpu(prompt, max_new_tokens=5, temperature=0.0)
+    expected_tokens = out_gpu[0, prompt.shape[1]:].tolist()
+    assert stream_tokens == expected_tokens, (
+        f"Stream tokens {stream_tokens} != GPU benchmark {expected_tokens}"
+    )
+
+    print(f"  Streaming tokens: {stream_tokens}")
+    print(f"  TTFT: {stream_times[0]*1000:.1f}ms, "
+          f"TPOT: {sum(stream_times[1:])/max(len(stream_times)-1, 1)*1000:.1f}ms  [PASS]")
+    return True
+
+
 if __name__ == "__main__":
     print("Running SmolLM2 Model integration tests...")
     results = [
@@ -387,6 +446,7 @@ if __name__ == "__main__":
         ("test_init_cache_rejects_invalid_max_seq", test_init_cache_rejects_invalid_max_seq()),
         ("test_model_rejects_empty_input", test_model_rejects_empty_input()),
         ("test_gpu_resident_full_trip", test_gpu_resident_full_trip()),
+        ("test_gpu_stream_generation", test_gpu_stream_generation()),
     ]
     print("\n" + "=" * 50)
     all_pass = True
