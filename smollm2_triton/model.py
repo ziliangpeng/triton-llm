@@ -14,7 +14,7 @@ from triton_llm import gpu
 from triton_llm.kernels.gemm import gemm
 from triton_llm.kernels.add import add
 from triton_llm.kernels.rms_norm import rms_norm
-from triton_llm.kernels.rope import precompute_cos_sin, precompute_cos_sin_device, apply_rope
+from triton_llm.kernels.rope import precompute_cos_sin_device, apply_rope
 from triton_llm.kernels.swiglu import swiglu
 from triton_llm.kernels.attention_gqa import attention_gqa
 
