@@ -128,7 +128,7 @@ def decode(ids: list[int]) -> str:
     for prefix in ("assistant\n", "user\n", "system\n"):
         if text.startswith(prefix):
             text = text[len(prefix):]
-    return text
+    return text.strip()
 
 
 # ── Weights ───────────────────────────────────────────────────────────
