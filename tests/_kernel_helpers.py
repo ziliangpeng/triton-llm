@@ -33,6 +33,8 @@ def rms_norm_cpu(x: np.ndarray, weight: np.ndarray, eps: float = 1e-5) -> np.nda
     Flattens leading dimensions for inputs with ndim > 2, then reshapes
     the result back to the original shape.
     """
+    if x.ndim < 2:
+        raise ValueError(f"RMSNorm expects at least a 2D input, got {x.ndim}D")
     orig_shape = x.shape
     needs_reshape = x.ndim > 2
     if needs_reshape:
