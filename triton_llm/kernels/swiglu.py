@@ -67,54 +67,7 @@ def _next_pow2(n: int) -> int:
     return p
 
 
-def swiglu(gate: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """Apply SwiGLU activation: silu(gate) * up (element-wise).
-
-    Parameters
-    ----------
-    gate : np.ndarray, float32. Any shape.
-    up : np.ndarray, float32. Same shape as ``gate``.
-
-    Returns
-    -------
-    out : np.ndarray, same shape as inputs, float32.
-    """
-    if gate.shape != up.shape:
-        raise ValueError(
-            f"gate shape {gate.shape} does not match up shape {up.shape}"
-        )
-
-    orig_shape = gate.shape
-    N = gate.size
-
-    if N == 0:
-        return np.empty(orig_shape, dtype=np.float32)
-
-    # Ensure contiguous float32.
-    gate = np.require(gate, dtype=np.float32, requirements=['C_CONTIGUOUS'])
-    up = np.require(up, dtype=np.float32, requirements=['C_CONTIGUOUS'])
-
-    # Transfer to device (flattened).
-    gate_dev = gpu.to_device(gate.reshape(-1))
-    up_dev = gpu.to_device(up.reshape(-1))
-    out_dev = gpu.allocate((N,), np.float32)
-
-    BLOCK_SIZE = min(_next_pow2(N), 1024)
-    grid = (triton.cdiv(N, BLOCK_SIZE),)
-
-    _swiglu_kernel[grid](
-        gate_dev.data_ptr(),
-        up_dev.data_ptr(),
-        out_dev.data_ptr(),
-        N,
-        BLOCK_SIZE,
-    )
-
-    gpu.synchronize()
-    return gpu.to_host(out_dev).reshape(orig_shape)
-
-
-def swiglu_device(
+def swiglu(
     gate_dev: "gpu.DeviceTensor",
     up_dev: "gpu.DeviceTensor",
     out_dev: "gpu.DeviceTensor | None" = None,

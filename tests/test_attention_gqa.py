@@ -6,8 +6,9 @@ configurations including SmolLM2 model sizes.
 """
 
 import numpy as np
-from triton_llm.kernels.attention_gqa import attention_gqa
-from triton_llm.kernels.rope import precompute_cos_sin, apply_rope
+from tests._kernel_helpers import attention_gqa_cpu
+from triton_llm.kernels.rope import precompute_cos_sin
+from tests._kernel_helpers import apply_rope_cpu
 
 
 def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -107,7 +108,7 @@ def test_gqa_equivalence():
     k = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
     v = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
 
-    out = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
+    out = attention_gqa_cpu(q, k, v, n_head, n_kv_head, causal=True)
     ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=True)
 
     max_diff = float(np.abs(out - ref).max())
@@ -135,7 +136,7 @@ def test_gqa_reduced_kv():
         k = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
         v = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
 
-        out = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
+        out = attention_gqa_cpu(q, k, v, n_head, n_kv_head, causal=True)
         ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=True)
         ref = ref.reshape(n_head * seq, d_k)
 
@@ -170,11 +171,11 @@ def test_gqa_with_rope():
     v = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
 
     # Apply RoPE
-    q_rope = apply_rope(q, cos, sin, seq_len=seq)
-    k_rope = apply_rope(k, cos, sin, seq_len=seq)
+    q_rope = apply_rope_cpu(q, cos, sin, seq_len=seq)
+    k_rope = apply_rope_cpu(k, cos, sin, seq_len=seq)
 
     # GQA attention
-    out = attention_gqa(q_rope, k_rope, v, n_head, n_kv_head, causal=True)
+    out = attention_gqa_cpu(q_rope, k_rope, v, n_head, n_kv_head, causal=True)
 
     # Reference: same RoPE + reference attention
     ref = attention_gqa_ref(q_rope, k_rope, v, n_head, n_kv_head, causal=True)
@@ -202,14 +203,14 @@ def test_gqa_causal():
     v = np.random.randn(n_kv_head * seq, d_k).astype(np.float32)
 
     # Reference output
-    ref = attention_gqa(q, k, v, n_head, n_kv_head, causal=True)
+    ref = attention_gqa_cpu(q, k, v, n_head, n_kv_head, causal=True)
 
     # Perturb the last key position for all KV heads (correct GQA flat layout: 
     # rows are (n_kv_head, seq, d_k), so perturb row (h*seq+seq-1, :) for each h)
     k_pert = k.copy()
     for h in range(n_kv_head):
         k_pert[h * seq + (seq - 1), :] = np.random.randn(d_k).astype(np.float32)
-    out = attention_gqa(q, k_pert, v, n_head, n_kv_head, causal=True)
+    out = attention_gqa_cpu(q, k_pert, v, n_head, n_kv_head, causal=True)
 
     # Reshape to (n_head, seq, d_k) to compare per-position
     ref_r = ref.reshape(n_head, seq, d_k)
@@ -230,7 +231,7 @@ def test_gqa_causal():
     q2 = np.random.randn(n_head * seq_q2, d_k).astype(np.float32)
     k2 = np.random.randn(n_kv_head * seq_k2, d_k).astype(np.float32)
     v2 = np.random.randn(n_kv_head * seq_k2, d_k).astype(np.float32)
-    out2 = attention_gqa(q2, k2, v2, n_head, n_kv_head, causal=True)
+    out2 = attention_gqa_cpu(q2, k2, v2, n_head, n_kv_head, causal=True)
     ref2 = attention_gqa_ref(q2, k2, v2, n_head, n_kv_head, causal=True)
     passed2 = np.allclose(out2, ref2, atol=1e-4)
     status2 = "PASS" if passed2 else "FAIL"
@@ -253,7 +254,7 @@ def test_gqa_non_causal():
     k = np.random.randn(n_kv_head * seq_k, d_k).astype(np.float32)
     v = np.random.randn(n_kv_head * seq_k, d_k).astype(np.float32)
 
-    out = attention_gqa(q, k, v, n_head, n_kv_head, causal=False)
+    out = attention_gqa_cpu(q, k, v, n_head, n_kv_head, causal=False)
     ref = attention_gqa_ref(q, k, v, n_head, n_kv_head, causal=False)
     ref = ref.reshape(n_head * seq_q, d_k)
 
@@ -280,7 +281,7 @@ def test_gqa_empty():
     q_empty = np.empty((0, d_k), dtype=np.float32)
     k_some = np.random.randn(n_kv_head * 8, d_k).astype(np.float32)
     v_some = np.random.randn(n_kv_head * 8, d_k).astype(np.float32)
-    out = attention_gqa(q_empty, k_some, v_some, n_head, n_kv_head, causal=False)
+    out = attention_gqa_cpu(q_empty, k_some, v_some, n_head, n_kv_head, causal=False)
     expected_shape = (n_head * 0, d_k)
     shape_ok = out.shape == expected_shape
     status = "PASS" if shape_ok else "FAIL"
@@ -291,7 +292,7 @@ def test_gqa_empty():
     q_some = np.random.randn(n_head * 4, d_k).astype(np.float32)
     k_empty = np.empty((0, d_k), dtype=np.float32)
     v_empty = np.empty((0, d_k), dtype=np.float32)
-    out2 = attention_gqa(q_some, k_empty, v_empty, n_head, n_kv_head, causal=False)
+    out2 = attention_gqa_cpu(q_some, k_empty, v_empty, n_head, n_kv_head, causal=False)
     expected_shape2 = (n_head * 4, d_k)
     shape_ok2 = out2.shape == expected_shape2 and np.all(out2 == 0.0)
     status2 = "PASS" if shape_ok2 else "FAIL"
@@ -299,7 +300,7 @@ def test_gqa_empty():
     assert shape_ok2, f"seq_k=0: expected {expected_shape2} and all zeros, got shape {out2.shape}"
 
     # Both zero
-    out3 = attention_gqa(q_empty, k_empty, v_empty, n_head, n_kv_head, causal=False)
+    out3 = attention_gqa_cpu(q_empty, k_empty, v_empty, n_head, n_kv_head, causal=False)
     expected_shape3 = (0, d_k)
     shape_ok3 = out3.shape == expected_shape3
     status3 = "PASS" if shape_ok3 else "FAIL"

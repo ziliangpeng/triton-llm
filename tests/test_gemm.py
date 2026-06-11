@@ -4,7 +4,7 @@ Unit tests for Triton GEMM kernel (CUDA + HIP).
 
 import numpy as np
 import time
-from triton_llm.kernels.gemm import gemm
+from tests._kernel_helpers import gemm_cpu
 
 
 def test_gemm_correctness():
@@ -27,7 +27,7 @@ def test_gemm_correctness():
         b = np.random.randn(K, N).astype(np.float32)
 
         ref = a @ b
-        out = gemm(a, b)
+        out = gemm_cpu(a, b)
 
         # Use np.allclose with reasonable tolerance
         passed = np.allclose(out, ref, rtol=1e-2, atol=5e-2)
@@ -53,13 +53,13 @@ def test_gemm_performance():
 
     # Warmup
     for _ in range(3):
-        _ = gemm(a, b)
+        _ = gemm_cpu(a, b)
 
     # Benchmark
     times = []
     for _ in range(10):
         t0 = time.perf_counter()
-        _ = gemm(a, b)
+        _ = gemm_cpu(a, b)
         times.append(time.perf_counter() - t0)
 
     avg_ms = np.mean(times) * 1000
@@ -82,7 +82,7 @@ def test_gemm_edge_cases():
     # K=0 should return a zero matrix (gemm handles it explicitly now)
     a = np.random.randn(10, 0).astype(np.float32)
     b = np.random.randn(0, 10).astype(np.float32)
-    out = gemm(a, b)
+    out = gemm_cpu(a, b)
     assert out.shape == (10, 10), f"Expected shape (10, 10), got {out.shape}"
     assert np.all(out == 0.0), "K=0 result should be all zeros"
     print("[PASS] K=0 case handled (returned zero matrix)")
@@ -90,7 +90,7 @@ def test_gemm_edge_cases():
     # M=0 should return a zero matrix
     a = np.random.randn(0, 20).astype(np.float32)
     b = np.random.randn(20, 10).astype(np.float32)
-    out = gemm(a, b)
+    out = gemm_cpu(a, b)
     assert out.shape == (0, 10), f"Expected shape (0, 10), got {out.shape}"
     assert out.size == 0, "M=0 result should be empty"
     print("[PASS] M=0 case handled (returned zero matrix)")
@@ -98,7 +98,7 @@ def test_gemm_edge_cases():
     # N=0 should return a zero matrix
     a = np.random.randn(10, 20).astype(np.float32)
     b = np.random.randn(20, 0).astype(np.float32)
-    out = gemm(a, b)
+    out = gemm_cpu(a, b)
     assert out.shape == (10, 0), f"Expected shape (10, 0), got {out.shape}"
     assert out.size == 0, "N=0 result should be empty"
     print("[PASS] N=0 case handled (returned zero matrix)")
@@ -107,7 +107,7 @@ def test_gemm_edge_cases():
     a = np.random.randn(10, 20).astype(np.float32)
     b = np.random.randn(30, 10).astype(np.float32)
     try:
-        _ = gemm(a, b)
+        _ = gemm_cpu(a, b)
         raise RuntimeError("Should have raised AssertionError")
     except AssertionError:
         print("[PASS] Mismatched K correctly rejected")

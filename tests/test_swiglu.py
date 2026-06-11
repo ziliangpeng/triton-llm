@@ -6,7 +6,7 @@ preservation, and shape-mismatch validation.
 """
 
 import numpy as np
-from triton_llm.kernels.swiglu import swiglu
+from tests._kernel_helpers import swiglu_cpu
 
 
 def silu_ref(x):
@@ -39,7 +39,7 @@ def test_swiglu_correctness():
         gate = np.random.randn(N).astype(np.float32)
         up = np.random.randn(N).astype(np.float32)
 
-        out = swiglu(gate, up)
+        out = swiglu_cpu(gate, up)
         ref = swiglu_ref(gate, up)
 
         max_diff = float(np.abs(out - ref).max())
@@ -56,7 +56,7 @@ def test_swiglu_edge_cases():
     # Large positive values (clamped to 20).
     gate = np.array([100.0, 500.0, 1e10], dtype=np.float32)
     up = np.ones_like(gate)
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     ref = swiglu_ref(gate, up)
     max_diff = float(np.abs(out - ref).max())
     passed = np.allclose(out, ref, atol=1e-4, rtol=1e-4)
@@ -66,7 +66,7 @@ def test_swiglu_edge_cases():
     # Large negative values (clamped to -20).
     gate = np.array([-100.0, -500.0, -1e10], dtype=np.float32)
     up = np.ones_like(gate)
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     ref = swiglu_ref(gate, up)
     max_diff = float(np.abs(out - ref).max())
     passed = np.allclose(out, ref, atol=1e-4, rtol=1e-4)
@@ -76,7 +76,7 @@ def test_swiglu_edge_cases():
     # All zeros.
     gate = np.zeros((16, 128), dtype=np.float32)
     up = np.ones_like(gate)
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     ref = swiglu_ref(gate, up)
     zero_passed = np.all(out == 0.0)
     max_diff = float(np.abs(out - ref).max())
@@ -86,7 +86,7 @@ def test_swiglu_edge_cases():
     # Single element.
     gate = np.array([3.0], dtype=np.float32)
     up = np.array([2.0], dtype=np.float32)
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     ref = swiglu_ref(gate, up)
     # Manual: silu(3) ≈ 3 / (1 + e⁻³) ≈ 3 / 1.0498 ≈ 2.857, * 2 ≈ 5.714
     max_diff = float(np.abs(out - ref).max())
@@ -101,7 +101,7 @@ def test_swiglu_empty():
     gate = np.empty((0, 1536), dtype=np.float32)
     up = np.empty((0, 1536), dtype=np.float32)
 
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     passed = out.shape == (0, 1536) and out.dtype == np.float32 and out.size == 0
     print(f"[{'PASS' if passed else 'FAIL'}] Empty input | shape={out.shape}")
     assert passed, f"Empty input failed, shape={out.shape}"
@@ -115,7 +115,7 @@ def test_swiglu_multidim():
     gate = np.random.randn(*shape).astype(np.float32)
     up = np.random.randn(*shape).astype(np.float32)
 
-    out = swiglu(gate, up)
+    out = swiglu_cpu(gate, up)
     ref = swiglu_ref(gate, up)
 
     shape_passed = out.shape == shape
@@ -133,7 +133,7 @@ def test_swiglu_mismatch():
     up = np.random.randn(2560).astype(np.float32)
 
     try:
-        swiglu(gate, up)
+        swiglu_cpu(gate, up)
         assert False, "Should have rejected mismatched shapes"
     except ValueError:
         print("[PASS] Mismatched shapes correctly rejected")

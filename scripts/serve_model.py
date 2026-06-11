@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""FastAPI HTTP server for SmolLM2 inference.
+"""FastAPI HTTP server for SmolLM2 inference (GPU only).
 
-Usage on a GPU compute node:
+Usage:
     python scripts/serve_model.py --port 8000
 
 From your local machine (after SSH tunnel is set up):
@@ -101,7 +101,7 @@ model = None
 tokenizer = None
 model_variant = "SmolLM2-135M"
 no_download = False
-use_gpu = False
+
 PORT = 8000  # default, overridden by CLI args in __main__
 
 
@@ -203,16 +203,13 @@ def warmup(model, tokenizer):
     """Run dummy prefill + decode to trigger Triton JIT compilation.
 
     After warmup, no Triton compilation happens on the first real request.
-    Uses generate() so internal _init_cache() is called properly.
+    Uses generate_gpu() so internal _init_cache() is called properly.
     """
     ids = tokenizer.encode("a")
     token_ids = np.array([ids], dtype=np.int32)
 
     t0 = time.time()
-    if use_gpu:
-        _ = model.generate_gpu(token_ids, max_new_tokens=1, temperature=0.0)
-    else:
-        _ = model.generate(token_ids, max_new_tokens=1, temperature=0.0)
+    _ = model.generate_gpu(token_ids, max_new_tokens=1, temperature=0.0)
     dt = time.time() - t0
     logger.info(f"  Warmup prefill + 1 decode: {dt:.1f}s  (Triton compile all kernels)")
 
@@ -304,10 +301,7 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
         np.random.seed(seed)
 
     t0 = time.time()
-    if use_gpu:
-        out = model.generate_gpu(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
-    else:
-        out = model.generate(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+    out = model.generate_gpu(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
     dt = time.time() - t0
 
     new_ids = out[0, seq_len:].tolist()
@@ -336,7 +330,7 @@ def _validate_request(seq_len, max_tokens, n_positions):
 async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
     """Async generator that yields SSE-formatted token chunks in **real time**.
 
-    Runs ``model.generate_stream()`` in a background thread and bridges
+    Runs ``model.generate_stream_gpu()`` in a background thread and bridges
     results to the async SSE generator via an ``asyncio.Queue``, so each
     token is sent to the client as soon as its decode step finishes.
 
@@ -348,32 +342,21 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     if seed is not None:
         np.random.seed(seed)
 
-    # Queue to bridge sync generate_stream() -> async SSE
-    # Use 0 (unbounded) for GPU path where tokens arrive in burst;
-    # the consumer drains at steady rate via SSE chunks.
+    # Queue to bridge sync generate_stream_gpu() -> async SSE
+    # Use 0 (unbounded) so the consumer can drain at its own pace.
     queue: asyncio.Queue = asyncio.Queue(maxsize=0)
     loop = asyncio.get_running_loop()
 
     def _run():
         """Runs in a background thread — consumes the sync generator."""
         try:
-            if use_gpu:
-                # GPU path: real token-by-token streaming via generate_stream_gpu()
-                for token_id, step_time in model.generate_stream_gpu(
-                    token_ids, max_new_tokens=max_tokens,
-                    temperature=temperature, top_k=top_k,
-                ):
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait, ("token", token_id, step_time)
-                    )
-            else:
-                for token_id, step_time in model.generate_stream(
-                    token_ids, max_new_tokens=max_tokens,
-                    temperature=temperature, top_k=top_k,
-                ):
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait, ("token", token_id, step_time)
-                    )
+            for token_id, step_time in model.generate_stream_gpu(
+                token_ids, max_new_tokens=max_tokens,
+                temperature=temperature, top_k=top_k,
+            ):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, ("token", token_id, step_time)
+                )
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None, None))
         except Exception as e:
             loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e), None))
@@ -493,8 +476,6 @@ def parse_args():
                    choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B"])
     p.add_argument("--no-download", action="store_true",
                    help="Skip real weights, use random (fast, gibberish output)")
-    p.add_argument("--gpu", action="store_true",
-                   help="Use GPU-resident inference path (7-8x faster)")
     p.add_argument("--log-level", type=str, default="info",
                    choices=["debug", "info", "warning", "error"])
     return p.parse_args()
@@ -506,6 +487,5 @@ if __name__ == "__main__":
                         format="%(levelname)s %(message)s")
     model_variant = args.model
     no_download = args.no_download
-    use_gpu = args.gpu
     PORT = args.port
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)

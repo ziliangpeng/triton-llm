@@ -252,7 +252,7 @@ def test_model_prealloc_cache_full_trip():
     model_full = SmolLM2ForCausalLM(config, weights)
     full_tokens = prompt.copy()
     for _ in range(5):
-        logits = model_full._forward_full(full_tokens)
+        logits = model_full.forward(full_tokens)
         next_token = int(np.argmax(logits[0, -1, :]))
         full_tokens = np.concatenate(
             [full_tokens, np.array([[next_token]], dtype=np.int32)], axis=1
@@ -295,8 +295,8 @@ def test_init_cache_rejects_invalid_max_seq():
     # Valid case should still work
     model._init_cache(max_seq=128)
     assert model._cache_len == 0
-    assert model.kv_cache[0]["k"].shape[1] == 128
-    print(f"  max_seq=128 cache shape: {model.kv_cache[0]['k'].shape}  [PASS]")
+    assert model.kv_cache_dev[0]["k"].shape[1] == 128
+    print(f"  max_seq=128 cache shape: {model.kv_cache_dev[0]['k'].shape}  [PASS]")
 
     # Exceeding max_position_embeddings
     try:
