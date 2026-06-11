@@ -121,13 +121,24 @@ def encode(text: str) -> np.ndarray:
 
 
 def decode(ids: list[int]) -> str:
-    """Decode token IDs to text, stripping leading role prefixes."""
+    """Decode token IDs to text, truncating at the first role boundary.
+
+    Instruct models often continue generating beyond the assistant turn
+    (e.g. ``user\\n...``, ``assistant\\n...``). Since we generate one
+    turn at a time, we truncate when a role marker appears.
+    """
     text = tokenizer.decode(ids, skip_special_tokens=True)
-    # Instruct models sometimes generate the role prefix as literal text
-    # (e.g. "assistant\n..." instead of just "..."). Strip it.
+    # Find the first role prefix after stripping leading one
     for prefix in ("assistant\n", "user\n", "system\n"):
         if text.startswith(prefix):
             text = text[len(prefix):]
+            break
+    # Truncate at any role boundary (ChatML line pattern) in the middle
+    for marker in ("\nuser\n", "\nassistant\n", "\nsystem\n"):
+        idx = text.find(marker)
+        if idx > 0:
+            text = text[:idx]
+            break
     return text.strip()
 
 
@@ -529,12 +540,6 @@ async def chat_completions(req: ChatCompletionRequest):
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
-    # Strip leading role prefix that small Instruct models sometimes generate
-    clean_text = new_text
-    for prefix in ("assistant\n", "user\n", "system\n"):
-        if clean_text.startswith(prefix):
-            clean_text = clean_text[len(prefix):]
-            break
     return ChatCompletionResponse(
         usage=Usage(
             prompt_tokens=seq_len,
@@ -544,7 +549,7 @@ async def chat_completions(req: ChatCompletionRequest):
         ),
         choices=[
             ChatResponseChoice(
-                message=ChatMessage(role="assistant", content=clean_text),
+                message=ChatMessage(role="assistant", content=new_text),
                 finish_reason="length",
             )
         ],
