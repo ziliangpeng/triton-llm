@@ -297,6 +297,7 @@ class SmolLM2ForCausalLM:
                 apply_rope(k_hm, self.cos_dev, self.sin_dev, seq_len=1, position_offset=prev_seq)
 
                 # Cache write (CPU numpy — unavoidable for Phase 1 cache storage)
+                assert k_hm.shape == (n_kv_head, d_k), f"k_hm shape {k_hm.shape} != ({n_kv_head}, {d_k})"
                 cache["k"][:, prev_seq:prev_seq + 1, :] = k_hm.to_numpy().reshape(n_kv_head, 1, d_k)
                 cache["v"][:, prev_seq:prev_seq + 1, :] = v_hm.to_numpy().reshape(n_kv_head, 1, d_k)
 
@@ -331,31 +332,15 @@ class SmolLM2ForCausalLM:
                 apply_rope(q_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
                 apply_rope(k_dev, self.cos_dev, self.sin_dev, seq_len=seq, position_offset=prev_seq)
 
-                if is_prefill:
-                    k_np_cache = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
-                    v_np_cache = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
-                    cache["k"][:, :seq, :] = k_np_cache
-                    cache["v"][:, :seq, :] = v_np_cache
+                # Always is_prefill here (seq>1 decode is handled by fast path above)
+                k_np_cache = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
+                v_np_cache = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
+                cache["k"][:, :seq, :] = k_np_cache
+                cache["v"][:, :seq, :] = v_np_cache
 
-                    attn_dev = attention_gqa(
-                        q_dev, k_dev, v_dev, n_head, n_kv_head, causal=True
-                    )
-                else:
-                    k_slice = gpu.to_host(k_dev).reshape(n_kv_head, seq, d_k)
-                    v_slice = gpu.to_host(v_dev).reshape(n_kv_head, seq, d_k)
-                    cache["k"][:, prev_seq:prev_seq + seq, :] = k_slice
-                    cache["v"][:, prev_seq:prev_seq + seq, :] = v_slice
-
-                    k_view_np = cache["k"][:, :total_after, :].reshape(-1, d_k)
-                    v_view_np = cache["v"][:, :total_after, :].reshape(-1, d_k)
-                    k_view_dev = gpu.to_device(np.ascontiguousarray(k_view_np))
-                    v_view_dev = gpu.to_device(np.ascontiguousarray(v_view_np))
-
-                    attn_dev = attention_gqa(
-                        q_dev, k_view_dev, v_view_dev,
-                        n_head, n_kv_head,
-                        causal=False,
-                    )
+                attn_dev = attention_gqa(
+                    q_dev, k_dev, v_dev, n_head, n_kv_head, causal=True
+                )
 
                 # Transpose attention output back: (n_head*seq, d_k) -> (seq, n_head*d_k)
                 attn_np = gpu.to_host(attn_dev)
