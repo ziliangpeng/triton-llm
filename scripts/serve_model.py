@@ -66,7 +66,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_k: int = Field(default=0, ge=0)
     seed: int | None = Field(default=None)
-    stream: bool = Field(default=False, description="SSE streaming (not yet supported for chat)")
+    stream: bool = Field(default=False, description="SSE streaming")
 
 
 class Usage(BaseModel):
@@ -240,7 +240,7 @@ def format_chat_prompt(messages: list[dict]) -> str:
         content = msg.get("content", "")
         label = role.capitalize()
         parts.append(f"{label}: {content}")
-    return "\n".join(parts)
+    return "\n".join(parts) + "\nAssistant:"
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────
@@ -459,15 +459,20 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
     t.start()
 
     step_times: list[float] = []
+    is_first = True
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
             token_text = decode([payload])
+            if is_first and not token_text:
+                # EOS token decoded to empty string — skip
+                continue
+            delta = {"content": token_text}
+            if is_first:
+                delta["role"] = "assistant"
+                is_first = False
             chunk = {
-                "choices": [{
-                    "delta": {"content": token_text},
-                    "finish_reason": None,
-                }],
+                "choices": [{"delta": delta, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             step_times.append(step_time)
@@ -477,18 +482,28 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
             yield f"data: {json.dumps({'error': payload})}\n\n"
             return
 
+    num_decodes = len(step_times)
+    total_time = sum(step_times)
+    finish = "stop" if num_decodes > 0 else "length"
     final_chunk = {
-        "choices": [{"delta": {}, "finish_reason": "length"}],
+        "choices": [{"delta": {}, "finish_reason": finish}],
     }
     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
 
+    ttft = step_times[0] if step_times else 0.0
+    tpot = (sum(step_times[1:]) / max(num_decodes - 1, 1)
+            if num_decodes > 1 else 0.0)
+    tps = round(num_decodes / total_time, 1) if total_time > 0 else 0.0
     usage_chunk = {
         "choices": [],
         "usage": {
             "prompt_tokens": seq_len,
-            "completion_tokens": len(step_times),
-            "total_tokens": seq_len + len(step_times),
-            "time_seconds": round(sum(step_times), 3),
+            "completion_tokens": num_decodes,
+            "total_tokens": seq_len + num_decodes,
+            "time_seconds": round(total_time, 3),
+            "ttft_ms": round(ttft * 1000, 1),
+            "tpot_ms": round(tpot * 1000, 1),
+            "tokens_per_second": tps,
         },
     }
     yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n"
@@ -529,6 +544,9 @@ async def completions(req: CompletionRequest):
 async def chat_completions(req: ChatCompletionRequest):
     if req.stream:
         prompt = format_chat_prompt([m.model_dump() for m in req.messages])
+        token_ids = encode(prompt)
+        seq_len = token_ids.shape[1]
+        _validate_request(seq_len, req.max_tokens, model.config.n_positions)
         return StreamingResponse(
             _stream_chat_generate(prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
             media_type="text/event-stream",
@@ -537,6 +555,7 @@ async def chat_completions(req: ChatCompletionRequest):
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
+    finish = "stop" if new_ids and new_ids[-1] == tokenizer.eos_token_id else "length"
     return ChatCompletionResponse(
         usage=Usage(
             prompt_tokens=seq_len,
@@ -547,7 +566,7 @@ async def chat_completions(req: ChatCompletionRequest):
         choices=[
             ChatResponseChoice(
                 message=ChatMessage(role="assistant", content=new_text),
-                finish_reason="length",
+                finish_reason=finish,
             )
         ],
     )
