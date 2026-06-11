@@ -70,6 +70,22 @@ class SmolLM2Config:
                 num_key_value_heads=32,
                 intermediate_size=8192,
             ),
+            # Instruct variants — same architecture, different weights
+            "SmolLM2-135M-Instruct": SmolLM2Config(),
+            "SmolLM2-360M-Instruct": SmolLM2Config(
+                hidden_size=960,
+                num_hidden_layers=32,
+                num_attention_heads=15,
+                num_key_value_heads=5,
+                intermediate_size=2560,
+            ),
+            "SmolLM2-1.7B-Instruct": SmolLM2Config(
+                hidden_size=2048,
+                num_hidden_layers=24,
+                num_attention_heads=32,
+                num_key_value_heads=32,
+                intermediate_size=8192,
+            ),
         }
         if name not in variants:
             raise ValueError(f"Unknown variant: {name!r}. Available: {list(variants.keys())}")

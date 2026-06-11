@@ -215,15 +215,18 @@ def warmup(model, tokenizer):
 
 
 def format_chat_prompt(messages: list[dict]) -> str:
-    """Convert chat messages to a plain text prompt (base model, no chat template).
+    """Convert chat messages to a prompt using the tokenizer's chat template.
 
-    Includes role prefixes so the model can distinguish system vs user vs assistant turns.
+    For Instruct models (e.g. SmolLM2-135M-Instruct), uses the proper ChatML-style
+    template with ``<|im_start|>`` tags. For base models, falls back to plain text.
     """
+    if hasattr(tokenizer, "apply_chat_template") and "Instruct" in model_variant:
+        return tokenizer.apply_chat_template(messages, tokenize=False)
+    # Fallback: plain text for base models
     parts = []
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        # Capitalise role for readability in the plain-text prompt
         label = role.capitalize()
         parts.append(f"{label}: {content}")
     return "\n".join(parts)
@@ -473,7 +476,8 @@ def parse_args():
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--model", type=str, default="SmolLM2-135M",
-                   choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B"])
+                   choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B",
+                            "SmolLM2-135M-Instruct", "SmolLM2-360M-Instruct", "SmolLM2-1.7B-Instruct"])
     p.add_argument("--no-download", action="store_true",
                    help="Skip real weights, use random (fast, gibberish output)")
     p.add_argument("--log-level", type=str, default="info",
