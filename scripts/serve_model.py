@@ -383,13 +383,22 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     t.start()
 
     step_times: list[float] = []
+    all_ids: list[int] = []
+    prev_text = ""
 
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
-            token_text = decode([payload])
+            all_ids.append(payload)
+            token_text = decode(all_ids)
+            # Extract only the new characters since last token
+            if token_text.startswith(prev_text):
+                delta_text = token_text[len(prev_text):]
+            else:
+                delta_text = token_text
+            prev_text = token_text
             chunk = {
-                "choices": [{"text": token_text, "finish_reason": None}],
+                "choices": [{"text": delta_text, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             step_times.append(step_time)
@@ -460,24 +469,19 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
 
     step_times: list[float] = []
     is_first = True
-    pending = ""  # buffer for stripping role prefix across token boundaries
+    all_ids: list[int] = []
+    prev_text = ""
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
-            token_text = decode([payload])
+            all_ids.append(payload)
+            token_text = decode(all_ids)
             if is_first and not token_text:
                 continue  # EOS token decoded to empty string — skip
             if is_first:
-                # Buffer until we can strip the leading role prefix
-                pending += token_text
                 for prefix in ("assistant\n", "user\n", "system\n"):
-                    if pending.startswith(prefix):
-                        token_text = pending[len(prefix):]
-                        is_first = False
-                        break
-                    elif len(pending) >= len(prefix):
-                        # enough chars, prefix didn't match — emit pending as-is
-                        token_text = pending
+                    if token_text.startswith(prefix):
+                        token_text = token_text[len(prefix):]
                         is_first = False
                         break
                 if is_first:
@@ -488,11 +492,16 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
                     "choices": [{"delta": delta, "finish_reason": None}],
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            else:
-                chunk = {
-                    "choices": [{"delta": {"content": token_text}, "finish_reason": None}],
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                prev_text = token_text
+            if token_text == prev_text:
+                # no new text yet — skip until we have something to emit
+                continue
+            delta_text = token_text[len(prev_text):] if token_text.startswith(prev_text) else token_text
+            prev_text = token_text
+            chunk = {
+                "choices": [{"delta": {"content": delta_text}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             step_times.append(step_time)
         elif msg_type == "done":
             break
