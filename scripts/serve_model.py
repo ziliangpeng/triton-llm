@@ -468,38 +468,24 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
     t.start()
 
     step_times: list[float] = []
-    is_first = True
     all_ids: list[int] = []
     prev_text = ""
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
             all_ids.append(payload)
-            token_text = decode(all_ids)
-            if is_first and not token_text:
-                continue  # EOS token decoded to empty string — skip
-            if is_first:
-                for prefix in ("assistant\n", "user\n", "system\n"):
-                    if token_text.startswith(prefix):
-                        token_text = token_text[len(prefix):]
-                        is_first = False
-                        break
-                if is_first:
-                    # still buffering, don't emit yet
-                    continue
-                delta = {"role": "assistant"}
-                chunk = {
-                    "choices": [{"delta": delta, "finish_reason": None}],
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                prev_text = token_text
-            if token_text == prev_text:
-                # no new text yet — skip until we have something to emit
+            # Incremental decode: accumulate IDs for proper whitespace
+            full = decode(all_ids)
+            if full.startswith(prev_text):
+                delta = full[len(prev_text):]
+            else:
+                delta = full
+            prev_text = full
+            if not delta:
+                step_times.append(step_time)
                 continue
-            delta_text = token_text[len(prev_text):] if token_text.startswith(prev_text) else token_text
-            prev_text = token_text
             chunk = {
-                "choices": [{"delta": {"content": delta_text}, "finish_reason": None}],
+                "choices": [{"delta": {"content": delta}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             step_times.append(step_time)
