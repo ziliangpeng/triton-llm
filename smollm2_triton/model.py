@@ -411,6 +411,7 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ) -> np.ndarray:
         """GPU-resident autoregressive generation.
 
@@ -460,6 +461,8 @@ class SmolLM2ForCausalLM:
             tokens = np.concatenate(
                 [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
             )
+            if next_token == eos_token_id:
+                break
             if step < max_new_tokens - 1:
                 new_token_arr = np.array([[next_token]], dtype=np.int32)
                 logits = self._forward_cached(new_token_arr)
@@ -471,6 +474,7 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ):
         """GPU-resident generation yielding tokens one by one with real timing.
 
@@ -529,6 +533,8 @@ class SmolLM2ForCausalLM:
 
             yield next_token, step_time
 
+            if eos_token_id is not None and next_token == eos_token_id:
+                return
             if step < max_new_tokens - 1:
                 new_token_arr = np.array([[next_token]], dtype=np.int32)
                 t_decode_start = time.perf_counter()
@@ -595,9 +601,11 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ) -> np.ndarray:
         """Alias for ``generate_gpu``. Provided for backward compatibility."""
-        return self.generate_gpu(token_ids, max_new_tokens, temperature, top_k)
+        return self.generate_gpu(token_ids, max_new_tokens, temperature, top_k,
+                                 eos_token_id=eos_token_id)
 
     def generate_stream(
         self,
@@ -605,6 +613,8 @@ class SmolLM2ForCausalLM:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ):
         """Alias for ``generate_stream_gpu``. Provided for backward compatibility."""
-        yield from self.generate_stream_gpu(token_ids, max_new_tokens, temperature, top_k)
+        yield from self.generate_stream_gpu(token_ids, max_new_tokens, temperature,
+                                            top_k, eos_token_id=eos_token_id)

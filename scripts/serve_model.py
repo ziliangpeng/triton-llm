@@ -66,7 +66,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     top_k: int = Field(default=0, ge=0)
     seed: int | None = Field(default=None)
-    stream: bool = Field(default=False, description="SSE streaming (not yet supported for chat)")
+    stream: bool = Field(default=False, description="SSE streaming")
 
 
 class Usage(BaseModel):
@@ -121,7 +121,18 @@ def encode(text: str) -> np.ndarray:
 
 
 def decode(ids: list[int]) -> str:
-    return tokenizer.decode(ids, skip_special_tokens=True)
+    """Decode token IDs to text, stripping leading role prefixes.
+
+    EOS tokens (``<|im_end|>``) are stripped by ``skip_special_tokens=True``.
+    Instruct models sometimes generate the role prefix as literal text in the
+    first token, so we strip those leading markers.
+    """
+    text = tokenizer.decode(ids, skip_special_tokens=True)
+    for prefix in ("assistant\n", "user\n", "system\n"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text.strip()
 
 
 # ── Weights ───────────────────────────────────────────────────────────
@@ -215,18 +226,21 @@ def warmup(model, tokenizer):
 
 
 def format_chat_prompt(messages: list[dict]) -> str:
-    """Convert chat messages to a plain text prompt (base model, no chat template).
+    """Convert chat messages to a prompt using the tokenizer's chat template.
 
-    Includes role prefixes so the model can distinguish system vs user vs assistant turns.
+    For Instruct models (e.g. SmolLM2-135M-Instruct), uses the proper ChatML-style
+    template with ``<|im_start|>`` tags. For base models, falls back to plain text.
     """
+    if hasattr(tokenizer, "apply_chat_template") and "Instruct" in model_variant:
+        return tokenizer.apply_chat_template(messages, tokenize=False)
+    # Fallback: plain text for base models
     parts = []
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        # Capitalise role for readability in the plain-text prompt
         label = role.capitalize()
         parts.append(f"{label}: {content}")
-    return "\n".join(parts)
+    return "\n".join(parts) + "\nAssistant:"
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────
@@ -301,7 +315,9 @@ def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, 
         np.random.seed(seed)
 
     t0 = time.time()
-    out = model.generate_gpu(token_ids, max_new_tokens=max_tokens, temperature=temperature, top_k=top_k)
+    out = model.generate_gpu(token_ids, max_new_tokens=max_tokens,
+                             temperature=temperature, top_k=top_k,
+                             eos_token_id=tokenizer.eos_token_id)
     dt = time.time() - t0
 
     new_ids = out[0, seq_len:].tolist()
@@ -353,6 +369,7 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
             for token_id, step_time in model.generate_stream_gpu(
                 token_ids, max_new_tokens=max_tokens,
                 temperature=temperature, top_k=top_k,
+                eos_token_id=tokenizer.eos_token_id,
             ):
                 loop.call_soon_threadsafe(
                     queue.put_nowait, ("token", token_id, step_time)
@@ -366,13 +383,22 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     t.start()
 
     step_times: list[float] = []
+    all_ids: list[int] = []
+    prev_text = ""
 
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
-            token_text = decode([payload])
+            all_ids.append(payload)
+            token_text = decode(all_ids)
+            # Extract only the new characters since last token
+            if token_text.startswith(prev_text):
+                delta_text = token_text[len(prev_text):]
+            else:
+                delta_text = token_text
+            prev_text = token_text
             chunk = {
-                "choices": [{"text": token_text, "finish_reason": None}],
+                "choices": [{"text": delta_text, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             step_times.append(step_time)
@@ -396,6 +422,91 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
             if num_decodes > 1 else 0.0)
     tps = round(num_decodes / total_time, 1) if total_time > 0 else 0.0
 
+    usage_chunk = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": seq_len,
+            "completion_tokens": num_decodes,
+            "total_tokens": seq_len + num_decodes,
+            "time_seconds": round(total_time, 3),
+            "ttft_ms": round(ttft * 1000, 1),
+            "tpot_ms": round(tpot * 1000, 1),
+            "tokens_per_second": tps,
+        },
+    }
+    yield f"data: {json.dumps(usage_chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
+    """Like _stream_generate but yields OpenAI chat format SSE chunks."""
+    token_ids = encode(req_prompt)
+    seq_len = token_ids.shape[1]
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=0)
+    loop = asyncio.get_running_loop()
+
+    def _run():
+        try:
+            for token_id, step_time in model.generate_stream_gpu(
+                token_ids, max_new_tokens=max_tokens,
+                temperature=temperature, top_k=top_k,
+                eos_token_id=tokenizer.eos_token_id,
+            ):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, ("token", token_id, step_time)
+                )
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None, None))
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e), None))
+            logger.exception("generate_stream error")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    step_times: list[float] = []
+    all_ids: list[int] = []
+    prev_text = ""
+    while True:
+        msg_type, payload, step_time = await queue.get()
+        if msg_type == "token":
+            all_ids.append(payload)
+            # Incremental decode: accumulate IDs for proper whitespace
+            full = decode(all_ids)
+            if full.startswith(prev_text):
+                delta = full[len(prev_text):]
+            else:
+                delta = full
+            prev_text = full
+            if not delta:
+                step_times.append(step_time)
+                continue
+            chunk = {
+                "choices": [{"delta": {"content": delta}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            step_times.append(step_time)
+        elif msg_type == "done":
+            break
+        elif msg_type == "error":
+            yield f"data: {json.dumps({'error': payload})}\n\n"
+            return
+
+    num_decodes = len(step_times)
+    total_time = sum(step_times)
+    finish = "stop" if num_decodes > 0 else "length"
+    final_chunk = {
+        "choices": [{"delta": {}, "finish_reason": finish}],
+    }
+    yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+
+    ttft = step_times[0] if step_times else 0.0
+    tpot = (sum(step_times[1:]) / max(num_decodes - 1, 1)
+            if num_decodes > 1 else 0.0)
+    tps = round(num_decodes / total_time, 1) if total_time > 0 else 0.0
     usage_chunk = {
         "choices": [],
         "usage": {
@@ -445,11 +556,19 @@ async def completions(req: CompletionRequest):
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(req: ChatCompletionRequest):
     if req.stream:
-        raise HTTPException(400, "Chat streaming not yet supported; use /v1/completions with stream=true")
+        prompt = format_chat_prompt([m.model_dump() for m in req.messages])
+        token_ids = encode(prompt)
+        seq_len = token_ids.shape[1]
+        _validate_request(seq_len, req.max_tokens, model.config.n_positions)
+        return StreamingResponse(
+            _stream_chat_generate(prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
+            media_type="text/event-stream",
+        )
     prompt = format_chat_prompt([m.model_dump() for m in req.messages])
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
+    finish = "stop" if new_ids and new_ids[-1] == tokenizer.eos_token_id else "length"
     return ChatCompletionResponse(
         usage=Usage(
             prompt_tokens=seq_len,
@@ -460,7 +579,7 @@ async def chat_completions(req: ChatCompletionRequest):
         choices=[
             ChatResponseChoice(
                 message=ChatMessage(role="assistant", content=new_text),
-                finish_reason="length",
+                finish_reason=finish,
             )
         ],
     )
@@ -473,7 +592,8 @@ def parse_args():
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--model", type=str, default="SmolLM2-135M",
-                   choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B"])
+                   choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B",
+                            "SmolLM2-135M-Instruct", "SmolLM2-360M-Instruct", "SmolLM2-1.7B-Instruct"])
     p.add_argument("--no-download", action="store_true",
                    help="Skip real weights, use random (fast, gibberish output)")
     p.add_argument("--log-level", type=str, default="info",

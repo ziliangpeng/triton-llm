@@ -166,9 +166,77 @@ def query_chat(messages: list[dict], max_tokens: int = 50, temperature: float = 
         return {"error": f"Connection failed: {e.reason}"}
 
 
+def query_chat_stream(messages: list[dict], max_tokens: int = 50, temperature: float = 0.0,
+                      top_k: int = 0, seed: int | None = None,
+                      host: str = "localhost", port: int = 8000):
+    """Send a streaming /v1/chat/completions request, yield delta text."""
+    body = {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_k": top_k,
+        "stream": True,
+    }
+    if seed is not None:
+        body["seed"] = seed
+
+    req = urllib.request.Request(
+        f"http://{host}:{port}/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                line = line.decode().strip()
+                if not line or line == "data: [DONE]":
+                    if line == "data: [DONE]":
+                        yield None, True, None
+                    continue
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    usage = data.get("usage")
+                    if usage:
+                        yield None, True, usage
+                        return
+                    delta = data.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content, False, None
+    except urllib.error.HTTPError as e:
+        yield f"[HTTP {e.code}]", True, None
+    except urllib.error.URLError as e:
+        yield f"[Connection failed]", True, None
+
+
+def _run_stream_chat(args):
+    """Run a streaming chat, printing tokens as they arrive."""
+    messages = [{"role": "user", "content": args.prompt}]
+    if args.system:
+        messages.insert(0, {"role": "system", "content": args.system})
+    print(f"User: {args.prompt}")
+    print("AI: ", end="", flush=True)
+    usage = None
+    for token_text, is_last, chunk_usage in query_chat_stream(
+        messages, args.max_tokens, args.temperature,
+        args.top_k, args.seed, args.host, args.port,
+    ):
+        if chunk_usage is not None:
+            usage = chunk_usage
+        elif token_text:
+            print(token_text, end="", flush=True)
+    print()
+    if usage:
+        print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
+              f"{usage.get('completion_tokens', '?')} = "
+              f"{usage.get('total_tokens', '?')} tokens "
+              f"({usage.get('time_seconds', '?')}s)")
+    return 0
+
+
 def _run_repl(args):
     """Interactive completions REPL — fresh completion per turn, no chat history."""
-    mode = "streaming" if args.stream else "batch"
+    mode = "streaming" if not args.no_stream else "batch"
     print(f"SmolLM2 REPL  (host={args.host}:{args.port}, max_tokens={args.max_tokens}, mode={mode})")
     print("Type your prompt.  Ctrl+D / Ctrl+C to exit.\n")
 
@@ -181,7 +249,7 @@ def _run_repl(args):
         if not prompt.strip():
             continue
 
-        if args.stream:
+        if not args.no_stream:
             usage = None
             for token_text, is_last, chunk_usage in query_completions_stream(
                 prompt, args.max_tokens, args.temperature,
@@ -222,20 +290,22 @@ def _run_repl(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Query SmolLM2 HTTP server")
-    p.add_argument("--prompt", default="The capital of France is",
-                   help="Input prompt (only used with --chat for the user message)")
+    p = argparse.ArgumentParser(description="SmolLM2 chat client")
+    p.add_argument("--prompt",
+                   help="One-shot prompt (for --completion or --chat)")
     p.add_argument("--chat", action="store_true",
-                   help="Use /v1/chat/completions endpoint")
+                   help="One-shot chat via /v1/chat/completions")
+    p.add_argument("--completion", action="store_true",
+                   help="One-shot completion via /v1/completions")
     p.add_argument("--interactive", action="store_true",
-                   help="Interactive chat session (implies --chat)")
+                   help="Interactive chat session (default)")
     p.add_argument("--repl", action="store_true",
-                   help="Interactive completions REPL (fresh completion per turn)")
-    p.add_argument("--stream", action="store_true",
-                   help="Stream tokens as they are generated (completions only)")
+                   help="Interactive completions REPL")
+    p.add_argument("--no-stream", action="store_true",
+                   help="Disable streaming (batch mode)")
     p.add_argument("--system", default=None,
                    help="System prompt for chat mode")
-    p.add_argument("--max-tokens", type=int, default=20)
+    p.add_argument("--max-tokens", type=int, default=80)
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--top-k", type=int, default=0)
     p.add_argument("--seed", type=int, default=None)
@@ -244,35 +314,39 @@ def main():
     p.add_argument("--raw", action="store_true", help="Print raw JSON response")
     args = p.parse_args()
 
-    if args.interactive:
+    # Default to interactive chat when no mode flags are given
+    no_mode = not (args.interactive or args.repl or args.chat or args.completion)
+    if args.interactive or no_mode:
         sys.exit(_run_interactive(args))
 
     if args.repl:
         sys.exit(_run_repl(args))
 
-    if args.stream and args.chat:
-        p.error("--stream is not yet supported with --chat")
+    if not args.no_stream and args.chat:
+        sys.exit(_run_stream_chat(args))
 
-    if args.stream:
+    if not args.no_stream and args.completion:
         sys.exit(_run_stream_completion(args))
 
-    if args.chat:
+    if args.completion:
+        result = query_completions(args.prompt or "", args.max_tokens, args.temperature,
+                                   args.top_k, args.seed, args.host, args.port)
+        _print_completion_result(result, args.prompt or "", args.raw)
+
+    elif args.chat:
         messages = []
         if args.system:
             messages.append({"role": "system", "content": args.system})
-        messages.append({"role": "user", "content": args.prompt})
+        messages.append({"role": "user", "content": args.prompt or "Hello"})
         result = query_chat(messages, args.max_tokens, args.temperature,
                             args.top_k, args.seed, args.host, args.port)
         _print_chat_result(result, args.raw)
-    else:
-        result = query_completions(args.prompt, args.max_tokens, args.temperature,
-                                   args.top_k, args.seed, args.host, args.port)
-        _print_completion_result(result, args.prompt, args.raw)
 
 
 def _run_interactive(args):
     """Run an interactive chat session. Returns 0 on success, 1 on error."""
-    print("Interactive chat (Ctrl+D to exit)\n")
+    mode = "streaming" if not args.no_stream else "batch"
+    print(f"\nInteractive chat ({mode}, Ctrl+D, Ctrl+C to exit)\n")
     messages = []
     if args.system:
         messages.append({"role": "system", "content": args.system})
@@ -281,23 +355,57 @@ def _run_interactive(args):
     while True:
         try:
             user_input = input("You: ")
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             print()
             break
         if not user_input.strip():
             continue
 
         messages.append({"role": "user", "content": user_input})
-        result = query_chat(messages, args.max_tokens, args.temperature,
-                            args.top_k, args.seed, args.host, args.port)
 
-        if "error" in result:
-            print(f"Error: {result['error']}")
-            return 1
-
-        assistant_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        print(f"AI:  {assistant_text}\n")
-        messages.append({"role": "assistant", "content": assistant_text})
+        if not args.no_stream:
+            print("AI:  ", end="", flush=True)
+            usage = None
+            full_text = ""
+            for token_text, is_last, chunk_usage in query_chat_stream(
+                messages, args.max_tokens, args.temperature,
+                args.top_k, args.seed, args.host, args.port,
+            ):
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                elif token_text:
+                    # Strip leading role prefix from server streaming output
+                    clean = token_text
+                    for prefix in ("assistant\n", "user\n", "system\n"):
+                        if full_text == "" and clean.startswith(prefix):
+                            clean = clean[len(prefix):]
+                            break
+                    if clean:
+                        print(clean, end="", flush=True)
+                        full_text += clean
+            print()
+            if usage:
+                ttft = usage.get("ttft_ms", "?")
+                tpot = usage.get("tpot_ms", "?")
+                tps = usage.get("tokens_per_second", "?")
+                print(f"     TTFT {ttft}ms  TPOT {tpot}ms  {tps} tok/s\n")
+            messages.append({"role": "assistant", "content": full_text})
+        else:
+            result = query_chat(messages, args.max_tokens, args.temperature,
+                                args.top_k, args.seed, args.host, args.port)
+            if "error" in result:
+                print(f"Error: {result['error']}")
+                return 1
+            assistant_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            print(f"AI:  {assistant_text}")
+            usage = result.get("usage", {})
+            if usage:
+                tps = usage.get("tokens_per_second", 0)
+                print(f"     {usage.get('completion_tokens', '?')} tok / {usage.get('time_seconds', '?')}s"
+                      f"  ({tps} tok/s)\n")
+            else:
+                print()
+            messages.append({"role": "assistant", "content": assistant_text})
     return 0
 
 
