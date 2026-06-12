@@ -159,7 +159,7 @@ class TestFormatChatPrompt:
     def test_single_user_message(self):
         from scripts.serve_model import format_chat_prompt
         result = format_chat_prompt([{"role": "user", "content": "Hello"}])
-        assert result == "User: Hello"
+        assert result == "User: Hello\nAssistant:"
 
     def test_system_and_user(self):
         from scripts.serve_model import format_chat_prompt
@@ -169,6 +169,7 @@ class TestFormatChatPrompt:
         ])
         assert "System: You are helpful." in result
         assert "User: What is 2+2?" in result
+        assert result.endswith("Assistant:"), f"Expected 'Assistant:' suffix"
 
     def test_multi_turn(self):
         from scripts.serve_model import format_chat_prompt
@@ -178,21 +179,21 @@ class TestFormatChatPrompt:
             {"role": "user", "content": "How are you?"},
         ])
         lines = result.split("\n")
-        assert len(lines) == 3
         assert lines[0] == "User: Hi"
         assert lines[1] == "Assistant: Hello!"
         assert lines[2] == "User: How are you?"
+        assert lines[3] == "Assistant:", f"Expected 'Assistant:' line, got {lines}"
 
     def test_default_role(self):
         from scripts.serve_model import format_chat_prompt
         # Missing role defaults to "User"
         result = format_chat_prompt([{"content": "test"}])
-        assert result == "User: test"
+        assert result == "User: test\nAssistant:"
 
     def test_empty_message_list(self):
         from scripts.serve_model import format_chat_prompt
         result = format_chat_prompt([])
-        assert result == ""
+        assert result == "Assistant:"
 
 
 # ── Client query functions ───────────────────────────────────────────
