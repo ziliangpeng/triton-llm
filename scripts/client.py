@@ -374,8 +374,15 @@ def _run_interactive(args):
                 if chunk_usage is not None:
                     usage = chunk_usage
                 elif token_text:
-                    print(token_text, end="", flush=True)
-                    full_text += token_text
+                    # Strip leading role prefix from server streaming output
+                    clean = token_text
+                    for prefix in ("assistant\n", "user\n", "system\n"):
+                        if full_text == "" and clean.startswith(prefix):
+                            clean = clean[len(prefix):]
+                            break
+                    if clean:
+                        print(clean, end="", flush=True)
+                        full_text += clean
             print()
             if usage:
                 ttft = usage.get("ttft_ms", "?")
