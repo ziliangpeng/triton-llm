@@ -41,8 +41,10 @@ def make_random_weights(config):
     n = config.hidden_size
     w = {}
     for i in range(n_layer):
+        q_dim = config.num_attention_heads * (n // config.num_attention_heads)
+        kv_dim = config.num_key_value_heads * (n // config.num_attention_heads)
         for p in ["q", "k", "v", "o"]:
-            out_dim = n if p == "o" else config.num_attention_heads * (n // config.num_attention_heads)
+            out_dim = n if p == "o" else (kv_dim if p in ("k", "v") else q_dim)
             in_dim = n
             w[f"model.layers.{i}.self_attn.{p}_proj.weight"] = np.random.randn(out_dim, in_dim).astype(np.float32)
         for p in ["gate", "up", "down"]:
@@ -254,7 +256,7 @@ class TestChatCompletions:
         # Mock model + tokenizer
         mock_model = MagicMock()
         mock_model.config.n_positions = 512
-        mock_model.generate_gpu.return_value = np.array([[5, 12, 7, 2, 15]], dtype=np.int32)  # 2 = EOS
+        mock_model.generate_gpu.return_value = np.array([[5, 12, 7, 2]], dtype=np.int32)  # 2 = EOS, reached at max_new_tokens=1
         mock_tokenizer = MagicMock()
         mock_tokenizer.eos_token_id = 2
         mock_tokenizer.encode.return_value = [5, 12, 7]

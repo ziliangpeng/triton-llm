@@ -193,7 +193,7 @@ class TestFormatChatPrompt:
     def test_empty_message_list(self):
         from scripts.serve_model import format_chat_prompt
         result = format_chat_prompt([])
-        assert result == "Assistant:"
+        assert result == "\nAssistant:"
 
 
 # ── Client query functions ───────────────────────────────────────────
