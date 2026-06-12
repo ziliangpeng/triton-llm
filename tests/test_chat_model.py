@@ -48,8 +48,13 @@ def make_random_weights(config):
             in_dim = n
             w[f"model.layers.{i}.self_attn.{p}_proj.weight"] = np.random.randn(out_dim, in_dim).astype(np.float32)
         for p in ["gate", "up", "down"]:
-            dim = config.intermediate_size if p != "down" else n
-            w[f"model.layers.{i}.mlp.{p}_proj.weight"] = np.random.randn(dim, n).astype(np.float32)
+            # HF stores gate/up as (intermediate_size, hidden_size)
+            # HF stores down as (hidden_size, intermediate_size)
+            if p == "down":
+                dim = (config.hidden_size, config.intermediate_size)
+            else:
+                dim = (config.intermediate_size, config.hidden_size)
+            w[f"model.layers.{i}.mlp.{p}_proj.weight"] = np.random.randn(*dim).astype(np.float32)
         w[f"model.layers.{i}.input_layernorm.weight"] = np.random.randn(n).astype(np.float32)
         w[f"model.layers.{i}.post_attention_layernorm.weight"] = np.random.randn(n).astype(np.float32)
     w["model.embed_tokens.weight"] = np.random.randn(config.vocab_size, n).astype(np.float32)
