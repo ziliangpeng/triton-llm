@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -117,31 +118,43 @@ def test_streaming_completion_supports_all_gpt2_variants_and_preserves_text():
             payload = asyncio.run(_collect_streaming_payload(resp))
         events = _parse_sse(payload)
         choice_events = [e for e in events if isinstance(e, dict) and e.get("choices")]
+        usage_events = [e for e in events if isinstance(e, dict) and e.get("usage")]
         text = "".join(e["choices"][0].get("text", "") for e in choice_events)
         assert text == " hello"
         assert any(e["choices"][0].get("finish_reason") == "stop" for e in choice_events)
+        assert len(usage_events) == 1
+        usage = usage_events[0]["usage"]
+        assert usage["prompt_tokens"] == 2
+        assert usage["completion_tokens"] == 3
+        assert usage["total_tokens"] == 5
+        assert "ttft_ms" in usage and "tokens_per_second" in usage
         assert events[-1] == "[DONE]"
-
-
-@patch.object(sm, "model_variant", "gpt2")
-def test_chat_endpoint_rejects_gpt2_with_clear_error():
-    req = ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")])
-    try:
-        asyncio.run(sm.chat_completions(req))
-        raise AssertionError("Expected GPT-2 chat request to be rejected")
-    except HTTPException as exc:
-        assert exc.status_code == 400
-        assert "not supported for GPT-2" in str(exc.detail)
 
 
 @patch.object(sm, "model", _mk_mock_model())
 @patch.object(sm, "tokenizer", _mk_mock_tokenizer())
+@pytest.mark.parametrize("variant", GPT2_VARIANTS)
+def test_chat_endpoint_rejects_gpt2_with_clear_error(variant):
+    req = ChatCompletionRequest(messages=[ChatMessage(role="user", content="hi")])
+    with patch.object(sm, "model_variant", variant):
+        try:
+            asyncio.run(sm.chat_completions(req))
+            raise AssertionError("Expected GPT-2 chat request to be rejected")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "not supported for GPT-2" in str(exc.detail)
+
+
+@patch.object(sm, "tokenizer", _mk_mock_tokenizer())
 def test_completion_endpoint_tolerates_oversized_top_k_via_model_sampling_contract():
     req = CompletionRequest(prompt="Hello", max_tokens=5, temperature=1.0, top_k=999999)
-    with patch.object(sm, "model_variant", "gpt2"):
+    model = _mk_mock_model()
+    with patch.object(sm, "model", model), patch.object(sm, "model_variant", "gpt2"):
         resp = asyncio.run(sm.completions(req))
     assert isinstance(resp, CompletionResponse)
     assert resp.text == " hello"
+    assert model.generate_gpu.call_args.kwargs["top_k"] == 999999
+    assert model.generate_gpu.call_args.kwargs["eos_token_id"] == 99
 
 
 def test_max_context_positions_uses_gpt2_n_positions():
