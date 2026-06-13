@@ -367,6 +367,13 @@ def _run_interactive(args):
             print("AI:  ", end="", flush=True)
             usage = None
             full_text = ""
+            prefix_buffer = ""
+            prefix_done = False
+            prefixes = (
+                "assistant\n", "assistant",
+                "user\n", "user",
+                "system\n", "system",
+            )
             for token_text, is_last, chunk_usage in query_chat_stream(
                 messages, args.max_tokens, args.temperature,
                 args.top_k, args.seed, args.host, args.port,
@@ -374,12 +381,26 @@ def _run_interactive(args):
                 if chunk_usage is not None:
                     usage = chunk_usage
                 elif token_text:
-                    # Strip leading role prefix from server streaming output
                     clean = token_text
-                    for prefix in ("assistant\n", "user\n", "system\n"):
-                        if full_text == "" and clean.startswith(prefix):
-                            clean = clean[len(prefix):]
-                            break
+                    if not prefix_done:
+                        prefix_buffer += clean
+                        matched_full = None
+                        for prefix in prefixes:
+                            if prefix_buffer.startswith(prefix):
+                                matched_full = prefix
+                                break
+                        if matched_full is not None:
+                            clean = prefix_buffer[len(matched_full):]
+                            prefix_done = True
+                            prefix_buffer = ""
+                        elif any(prefix.startswith(prefix_buffer) for prefix in prefixes):
+                            # Still waiting to see whether this becomes a full role prefix
+                            continue
+                        else:
+                            # Not a role prefix; flush buffered content as-is
+                            clean = prefix_buffer
+                            prefix_done = True
+                            prefix_buffer = ""
                     if clean:
                         print(clean, end="", flush=True)
                         full_text += clean
