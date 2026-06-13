@@ -213,39 +213,38 @@ def _strip_stream_role_prefix(token_text: str, prefix_buffer: str, prefix_done: 
     """Strip a leading role prefix from streaming chat chunks.
 
     The server may split role prefixes across multiple SSE chunks, e.g.:
-    ``ass`` → ``istant`` → ``Hello``. Buffer the initial chunks until we can
-    determine whether they form one of the known role prefixes.
+    ``ass`` → ``istant`` → ``\nHello``. Buffer the initial chunks until we can
+    determine whether they form one of the known newline-qualified role prefixes.
 
     Returns ``(clean_text, new_prefix_buffer, new_prefix_done)``.
     ``clean_text`` may be empty while still buffering.
     """
-    prefixes = (
-        "assistant\n", "assistant",
-        "user\n", "user",
-        "system\n", "system",
-    )
+    full_prefixes = ("assistant\n", "user\n", "system\n")
     if prefix_done or not token_text:
         return token_text, prefix_buffer, prefix_done
 
     prefix_buffer += token_text
-    # Prefer the longest prefix match. If the current buffer is exactly a bare
-    # prefix like "assistant" but could still extend to "assistant\n", keep
-    # buffering so we don't leak a leading newline in the next chunk.
-    if any(prefix.startswith(prefix_buffer) and prefix != prefix_buffer for prefix in prefixes):
-        return "", prefix_buffer, False
 
-    matched_full = None
-    for prefix in prefixes:
+    # Exact/full match: strip the role prefix.
+    for prefix in full_prefixes:
         if prefix_buffer.startswith(prefix):
-            matched_full = prefix
-            break
+            return prefix_buffer[len(prefix):], "", True
 
-    if matched_full is not None:
-        return prefix_buffer[len(matched_full):], "", True
-    if any(prefix.startswith(prefix_buffer) for prefix in prefixes):
-        # Still waiting to see whether this becomes a full role prefix
+    # Still could become a full role prefix on the next chunk (e.g. "ass", "assistant").
+    if any(prefix.startswith(prefix_buffer) for prefix in full_prefixes):
         return "", prefix_buffer, False
-    # Not a role prefix; flush buffered content as-is
+
+    # Heuristic: some models emit bare role text with no newline, e.g.
+    # "assistantHello". Strip only when the buffered bare role is immediately
+    # followed by an uppercase letter or punctuation, but keep normal text like
+    # "assistant professor" intact.
+    for bare in ("assistant", "user", "system"):
+        if prefix_buffer.startswith(bare):
+            rest = prefix_buffer[len(bare):]
+            if rest and (rest[0].isupper() or rest[0] in ".,!?:;\"'("):
+                return rest, "", True
+
+    # Not a role prefix; flush buffered content as-is.
     return prefix_buffer, "", True
 
 
@@ -273,6 +272,9 @@ def _run_stream_chat(args):
             if clean:
                 print(clean, end="", flush=True)
                 full_text += clean
+    if prefix_buffer and not prefix_done:
+        print(prefix_buffer, end="", flush=True)
+        full_text += prefix_buffer
     print()
     if usage:
         print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
@@ -430,6 +432,9 @@ def _run_interactive(args):
                     if clean:
                         print(clean, end="", flush=True)
                         full_text += clean
+            if prefix_buffer and not prefix_done:
+                print(prefix_buffer, end="", flush=True)
+                full_text += prefix_buffer
             print()
             if usage:
                 ttft = usage.get("ttft_ms", "?")

@@ -249,6 +249,21 @@ class TestStreamingRolePrefixStrip:
         assert buf == ""
         assert done is True
 
+    def test_bare_role_word_in_normal_text_is_preserved(self):
+        from scripts.client import _strip_stream_role_prefix
+        buf = ""
+        done = False
+
+        clean, buf, done = _strip_stream_role_prefix("assistant", buf, done)
+        assert clean == ""
+        assert buf == "assistant"
+        assert done is False
+
+        clean, buf, done = _strip_stream_role_prefix(" professor", buf, done)
+        assert clean == "assistant professor"
+        assert buf == ""
+        assert done is True
+
     def test_split_assistant_newline_prefix_across_chunks(self):
         from scripts.client import _strip_stream_role_prefix
         buf = ""
