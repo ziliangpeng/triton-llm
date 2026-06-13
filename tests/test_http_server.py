@@ -224,3 +224,67 @@ class TestClientQueries:
                             host="127.0.0.1", port=port)
         assert "error" in result
         assert "Connection failed" in result["error"] or "refused" in result["error"]
+
+
+class TestStreamingRolePrefixStrip:
+    """Unit tests for client-side stripping of split streaming role prefixes."""
+
+    def test_split_assistant_prefix_across_chunks(self):
+        from scripts.client import _strip_stream_role_prefix
+        buf = ""
+        done = False
+
+        clean, buf, done = _strip_stream_role_prefix("ass", buf, done)
+        assert clean == ""
+        assert buf == "ass"
+        assert done is False
+
+        clean, buf, done = _strip_stream_role_prefix("istant", buf, done)
+        assert clean == ""
+        assert buf == "assistant"
+        assert done is False
+
+        clean, buf, done = _strip_stream_role_prefix("Hello!", buf, done)
+        assert clean == "Hello!"
+        assert buf == ""
+        assert done is True
+
+    def test_split_assistant_newline_prefix_across_chunks(self):
+        from scripts.client import _strip_stream_role_prefix
+        buf = ""
+        done = False
+
+        clean, buf, done = _strip_stream_role_prefix("assistant", buf, done)
+        assert clean == ""
+        assert done is False
+        assert buf == "assistant"
+
+        clean, buf, done = _strip_stream_role_prefix("\nHello", buf, done)
+        assert clean == "Hello"
+        assert buf == ""
+        assert done is True
+
+    def test_non_prefix_content_flushes_as_is(self):
+        from scripts.client import _strip_stream_role_prefix
+        buf = ""
+        done = False
+
+        clean, buf, done = _strip_stream_role_prefix("Hello", buf, done)
+        assert clean == "Hello"
+        assert buf == ""
+        assert done is True
+
+    def test_user_prefix_also_stripped(self):
+        from scripts.client import _strip_stream_role_prefix
+        buf = ""
+        done = False
+
+        clean, buf, done = _strip_stream_role_prefix("user", buf, done)
+        assert clean == ""
+        assert done is False
+        assert buf == "user"
+
+        clean, buf, done = _strip_stream_role_prefix("\nWhat?", buf, done)
+        assert clean == "What?"
+        assert buf == ""
+        assert done is True

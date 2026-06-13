@@ -209,6 +209,46 @@ def query_chat_stream(messages: list[dict], max_tokens: int = 50, temperature: f
         yield f"[Connection failed]", True, None
 
 
+def _strip_stream_role_prefix(token_text: str, prefix_buffer: str, prefix_done: bool):
+    """Strip a leading role prefix from streaming chat chunks.
+
+    The server may split role prefixes across multiple SSE chunks, e.g.:
+    ``ass`` → ``istant`` → ``Hello``. Buffer the initial chunks until we can
+    determine whether they form one of the known role prefixes.
+
+    Returns ``(clean_text, new_prefix_buffer, new_prefix_done)``.
+    ``clean_text`` may be empty while still buffering.
+    """
+    prefixes = (
+        "assistant\n", "assistant",
+        "user\n", "user",
+        "system\n", "system",
+    )
+    if prefix_done or not token_text:
+        return token_text, prefix_buffer, prefix_done
+
+    prefix_buffer += token_text
+    # Prefer the longest prefix match. If the current buffer is exactly a bare
+    # prefix like "assistant" but could still extend to "assistant\n", keep
+    # buffering so we don't leak a leading newline in the next chunk.
+    if any(prefix.startswith(prefix_buffer) and prefix != prefix_buffer for prefix in prefixes):
+        return "", prefix_buffer, False
+
+    matched_full = None
+    for prefix in prefixes:
+        if prefix_buffer.startswith(prefix):
+            matched_full = prefix
+            break
+
+    if matched_full is not None:
+        return prefix_buffer[len(matched_full):], "", True
+    if any(prefix.startswith(prefix_buffer) for prefix in prefixes):
+        # Still waiting to see whether this becomes a full role prefix
+        return "", prefix_buffer, False
+    # Not a role prefix; flush buffered content as-is
+    return prefix_buffer, "", True
+
+
 def _run_stream_chat(args):
     """Run a streaming chat, printing tokens as they arrive."""
     messages = [{"role": "user", "content": args.prompt}]
@@ -217,6 +257,9 @@ def _run_stream_chat(args):
     print(f"User: {args.prompt}")
     print("AI: ", end="", flush=True)
     usage = None
+    full_text = ""
+    prefix_buffer = ""
+    prefix_done = False
     for token_text, is_last, chunk_usage in query_chat_stream(
         messages, args.max_tokens, args.temperature,
         args.top_k, args.seed, args.host, args.port,
@@ -224,7 +267,12 @@ def _run_stream_chat(args):
         if chunk_usage is not None:
             usage = chunk_usage
         elif token_text:
-            print(token_text, end="", flush=True)
+            clean, prefix_buffer, prefix_done = _strip_stream_role_prefix(
+                token_text, prefix_buffer, prefix_done
+            )
+            if clean:
+                print(clean, end="", flush=True)
+                full_text += clean
     print()
     if usage:
         print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
@@ -369,11 +417,6 @@ def _run_interactive(args):
             full_text = ""
             prefix_buffer = ""
             prefix_done = False
-            prefixes = (
-                "assistant\n", "assistant",
-                "user\n", "user",
-                "system\n", "system",
-            )
             for token_text, is_last, chunk_usage in query_chat_stream(
                 messages, args.max_tokens, args.temperature,
                 args.top_k, args.seed, args.host, args.port,
@@ -381,26 +424,9 @@ def _run_interactive(args):
                 if chunk_usage is not None:
                     usage = chunk_usage
                 elif token_text:
-                    clean = token_text
-                    if not prefix_done:
-                        prefix_buffer += clean
-                        matched_full = None
-                        for prefix in prefixes:
-                            if prefix_buffer.startswith(prefix):
-                                matched_full = prefix
-                                break
-                        if matched_full is not None:
-                            clean = prefix_buffer[len(matched_full):]
-                            prefix_done = True
-                            prefix_buffer = ""
-                        elif any(prefix.startswith(prefix_buffer) for prefix in prefixes):
-                            # Still waiting to see whether this becomes a full role prefix
-                            continue
-                        else:
-                            # Not a role prefix; flush buffered content as-is
-                            clean = prefix_buffer
-                            prefix_done = True
-                            prefix_buffer = ""
+                    clean, prefix_buffer, prefix_done = _strip_stream_role_prefix(
+                        token_text, prefix_buffer, prefix_done
+                    )
                     if clean:
                         print(clean, end="", flush=True)
                         full_text += clean
