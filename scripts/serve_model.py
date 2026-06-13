@@ -105,12 +105,22 @@ no_download = False
 PORT = 8000  # default, overridden by CLI args in __main__
 
 
+def is_gpt2_variant(variant: str) -> bool:
+    return variant in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
+
+
+def hf_repo_id(variant: str) -> str:
+    if is_gpt2_variant(variant):
+        return f"openai-community/{variant}"
+    return f"HuggingFaceTB/{variant}"
+
+
 # ── Tokenizer ─────────────────────────────────────────────────────────
 
 def load_tokenizer(variant: str):
     from transformers import AutoTokenizer
     logger.info("Loading tokenizer...")
-    t = AutoTokenizer.from_pretrained(f"HuggingFaceTB/{variant}")
+    t = AutoTokenizer.from_pretrained(hf_repo_id(variant))
     logger.info(f"  Tokenizer loaded (vocab_size={t.vocab_size})")
     return t
 
@@ -138,8 +148,7 @@ def decode(ids: list[int]) -> str:
 # ── Weights ───────────────────────────────────────────────────────────
 
 def download_weights(variant: str) -> dict:
-    """Download real SmolLM2 weights from HuggingFace, return numpy dict."""
-    hf_name = f"HuggingFaceTB/{variant}"
+    """Download real model weights from HuggingFace, return numpy dict."""
     cache_dir = os.path.join(tempfile.gettempdir(), f"triton-llm-{variant}-weights")
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -156,7 +165,7 @@ def download_weights(variant: str) -> dict:
     t0 = time.time()
 
     sf_path = hf_hub_download(
-        repo_id=hf_name,
+        repo_id=hf_repo_id(variant),
         filename="model.safetensors",
         cache_dir=os.path.join(cache_dir, "hf-cache"),
     )
@@ -185,29 +194,57 @@ def _load_dir(cache_dir: str) -> dict:
 
 def random_weights(cfg) -> dict:
     """Generate random weights for testing (output will be gibberish)."""
-    n = cfg.hidden_size
-    d_head = n // cfg.num_attention_heads
-    n_q = cfg.num_attention_heads * d_head
-    n_kv = cfg.num_key_value_heads * d_head
-    ffn = cfg.intermediate_size
     np.random.seed(42)
-    w = {}
-    w["model.embed_tokens.weight"] = np.random.randn(cfg.vocab_size, n).astype(np.float32)
-    for i in range(cfg.num_hidden_layers):
-        p = f"model.layers.{i}."
-        w[f"{p}self_attn.q_proj.weight"] = np.random.randn(n_q, n).astype(np.float32)
-        w[f"{p}self_attn.k_proj.weight"] = np.random.randn(n_kv, n).astype(np.float32)
-        w[f"{p}self_attn.v_proj.weight"] = np.random.randn(n_kv, n).astype(np.float32)
-        w[f"{p}self_attn.o_proj.weight"] = np.random.randn(n, n_q).astype(np.float32)
-        w[f"{p}mlp.gate_proj.weight"] = np.random.randn(ffn, n).astype(np.float32)
-        w[f"{p}mlp.up_proj.weight"] = np.random.randn(ffn, n).astype(np.float32)
-        w[f"{p}mlp.down_proj.weight"] = np.random.randn(n, ffn).astype(np.float32)
-        w[f"{p}input_layernorm.weight"] = np.random.randn(n).astype(np.float32)
-        w[f"{p}post_attention_layernorm.weight"] = np.random.randn(n).astype(np.float32)
-    w["model.norm.weight"] = np.random.randn(n).astype(np.float32)
-    w["lm_head.weight"] = np.random.randn(cfg.vocab_size, n).astype(np.float32)
+    if hasattr(cfg, "hidden_size"):
+        n = cfg.hidden_size
+        d_head = n // cfg.num_attention_heads
+        n_q = cfg.num_attention_heads * d_head
+        n_kv = cfg.num_key_value_heads * d_head
+        ffn = cfg.intermediate_size
+        w = {}
+        w["model.embed_tokens.weight"] = np.random.randn(cfg.vocab_size, n).astype(np.float32)
+        for i in range(cfg.num_hidden_layers):
+            p = f"model.layers.{i}."
+            w[f"{p}self_attn.q_proj.weight"] = np.random.randn(n_q, n).astype(np.float32)
+            w[f"{p}self_attn.k_proj.weight"] = np.random.randn(n_kv, n).astype(np.float32)
+            w[f"{p}self_attn.v_proj.weight"] = np.random.randn(n_kv, n).astype(np.float32)
+            w[f"{p}self_attn.o_proj.weight"] = np.random.randn(n, n_q).astype(np.float32)
+            w[f"{p}mlp.gate_proj.weight"] = np.random.randn(ffn, n).astype(np.float32)
+            w[f"{p}mlp.up_proj.weight"] = np.random.randn(ffn, n).astype(np.float32)
+            w[f"{p}mlp.down_proj.weight"] = np.random.randn(n, ffn).astype(np.float32)
+            w[f"{p}input_layernorm.weight"] = np.random.randn(n).astype(np.float32)
+            w[f"{p}post_attention_layernorm.weight"] = np.random.randn(n).astype(np.float32)
+        w["model.norm.weight"] = np.random.randn(n).astype(np.float32)
+        w["lm_head.weight"] = np.random.randn(cfg.vocab_size, n).astype(np.float32)
+        logger.warning("  Using RANDOM weights — output will be gibberish!")
+        return w
+
+    # GPT-2 config layout
+    n = cfg.n_embd
+    v = cfg.vocab_size
+    weights = {
+        "wte.weight": np.random.randn(v, n).astype(np.float32),
+        "wpe.weight": np.random.randn(cfg.n_positions, n).astype(np.float32),
+        "ln_f.weight": np.random.randn(n).astype(np.float32),
+        "ln_f.bias": np.random.randn(n).astype(np.float32),
+    }
+    for i in range(cfg.n_layer):
+        weights.update({
+            f"h.{i}.attn.c_attn.weight": np.random.randn(n, 3 * n).astype(np.float32),
+            f"h.{i}.attn.c_attn.bias": np.random.randn(3 * n).astype(np.float32),
+            f"h.{i}.attn.c_proj.weight": np.random.randn(n, n).astype(np.float32),
+            f"h.{i}.attn.c_proj.bias": np.random.randn(n).astype(np.float32),
+            f"h.{i}.mlp.c_fc.weight": np.random.randn(n, 4 * n).astype(np.float32),
+            f"h.{i}.mlp.c_fc.bias": np.random.randn(4 * n).astype(np.float32),
+            f"h.{i}.mlp.c_proj.weight": np.random.randn(4 * n, n).astype(np.float32),
+            f"h.{i}.mlp.c_proj.bias": np.random.randn(n).astype(np.float32),
+            f"h.{i}.ln_1.weight": np.random.randn(n).astype(np.float32),
+            f"h.{i}.ln_1.bias": np.random.randn(n).astype(np.float32),
+            f"h.{i}.ln_2.weight": np.random.randn(n).astype(np.float32),
+            f"h.{i}.ln_2.bias": np.random.randn(n).astype(np.float32),
+        })
     logger.warning("  Using RANDOM weights — output will be gibberish!")
-    return w
+    return weights
 
 
 def warmup(model, tokenizer):
@@ -249,14 +286,22 @@ def format_chat_prompt(messages: list[dict]) -> str:
 async def lifespan(app: FastAPI):
     global model, tokenizer
 
-    from smollm2_triton.config import SmolLM2Config
-    from smollm2_triton.model import SmolLM2ForCausalLM
-
     logger.info(f"Loading {model_variant}...")
 
-    # ── Config ──
+    # ── Config / model class selection ──
     t0 = time.time()
-    cfg = SmolLM2Config.from_pretrained(model_variant)
+    if is_gpt2_variant(model_variant):
+        from gpt2_triton.config import GPT2Config
+        from gpt2_triton.model import GPT2Model
+
+        cfg = GPT2Config.from_pretrained(model_variant)
+        ModelClass = GPT2Model
+    else:
+        from smollm2_triton.config import SmolLM2Config
+        from smollm2_triton.model import SmolLM2ForCausalLM
+
+        cfg = SmolLM2Config.from_pretrained(model_variant)
+        ModelClass = SmolLM2ForCausalLM
     logger.info(f"  Config loaded in {time.time() - t0:.1f}s")
 
     # ── Weights ──
@@ -274,8 +319,8 @@ async def lifespan(app: FastAPI):
 
     # ── Model creation ──
     t0 = time.time()
-    model = SmolLM2ForCausalLM(cfg, weights)
-    logger.info(f"  Model created in {time.time() - t0:.1f}s  (numpy prep + weight transpose)")
+    model = ModelClass(cfg, weights)
+    logger.info(f"  Model created in {time.time() - t0:.1f}s")
 
     # ── Tokenizer ──
     try:
@@ -305,11 +350,18 @@ async def health():
     return {"status": "ok", "model": model_variant, "loaded": model is not None}
 
 
+def max_context_positions(model_obj) -> int:
+    cfg = model_obj.config
+    if hasattr(cfg, "n_positions"):
+        return cfg.n_positions
+    return cfg.max_position_embeddings
+
+
 def _generate(req_prompt: str, max_tokens: int, temperature: float, top_k: int, seed: int | None):
     """Shared generation logic for both /v1/completions and /v1/chat/completions."""
     token_ids = encode(req_prompt)
     seq_len = token_ids.shape[1]
-    _validate_request(seq_len, max_tokens, model.config.n_positions)
+    _validate_request(seq_len, max_tokens, max_context_positions(model))
 
     if seed is not None:
         np.random.seed(seed)
@@ -533,7 +585,7 @@ async def completions(req: CompletionRequest):
     if req.stream:
         token_ids = encode(req.prompt)
         seq_len = token_ids.shape[1]
-        _validate_request(seq_len, req.max_tokens, model.config.n_positions)
+        _validate_request(seq_len, req.max_tokens, max_context_positions(model))
         return StreamingResponse(
             _stream_generate(req.prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
             media_type="text/event-stream",
@@ -555,11 +607,13 @@ async def completions(req: CompletionRequest):
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(req: ChatCompletionRequest):
+    if is_gpt2_variant(model_variant):
+        raise HTTPException(400, "Chat completions are not supported for GPT-2; use /v1/completions")
     if req.stream:
         prompt = format_chat_prompt([m.model_dump() for m in req.messages])
         token_ids = encode(prompt)
         seq_len = token_ids.shape[1]
-        _validate_request(seq_len, req.max_tokens, model.config.n_positions)
+        _validate_request(seq_len, req.max_tokens, max_context_positions(model))
         return StreamingResponse(
             _stream_chat_generate(prompt, req.max_tokens, req.temperature, req.top_k, req.seed),
             media_type="text/event-stream",
@@ -588,12 +642,15 @@ async def chat_completions(req: ChatCompletionRequest):
 # ── CLI ───────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="SmolLM2 Triton HTTP server")
+    p = argparse.ArgumentParser(description="Triton HTTP server")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--host", type=str, default="127.0.0.1")
     p.add_argument("--model", type=str, default="SmolLM2-135M",
-                   choices=["SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B",
-                            "SmolLM2-135M-Instruct", "SmolLM2-360M-Instruct", "SmolLM2-1.7B-Instruct"])
+                   choices=[
+                       "SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B",
+                       "SmolLM2-135M-Instruct", "SmolLM2-360M-Instruct", "SmolLM2-1.7B-Instruct",
+                       "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl",
+                   ])
     p.add_argument("--no-download", action="store_true",
                    help="Skip real weights, use random (fast, gibberish output)")
     p.add_argument("--log-level", type=str, default="info",

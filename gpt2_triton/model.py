@@ -442,6 +442,7 @@ class GPT2Model:
         max_new_tokens: int = 20,
         temperature: float = 1.0,
         top_k: int = 0,
+        eos_token_id: int | None = None,
     ) -> np.ndarray:
         """Autoregressive generation with KV cache.
 
@@ -483,14 +484,70 @@ class GPT2Model:
 
         # Generate loop
         tokens = token_ids.copy()
-        for _ in range(max_new_tokens):
+        for step in range(max_new_tokens):
             next_logits = logits[0, -1, :]  # (vocab_size,)
             next_token = self._sample(next_logits, temperature, top_k)
             tokens = np.concatenate(
                 [tokens, np.array([[next_token]], dtype=np.int32)], axis=1
             )
-            if _ < max_new_tokens - 1:
+            if next_token == eos_token_id:
+                break
+            if step < max_new_tokens - 1:
                 # Single-token decode step
                 new_token_arr = np.array([[next_token]], dtype=np.int32)
                 logits = self.forward(new_token_arr, use_cache=True)
         return tokens
+
+    def generate_gpu(
+        self,
+        token_ids: np.ndarray,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        top_k: int = 0,
+        eos_token_id: int | None = None,
+    ) -> np.ndarray:
+        """Compatibility alias for server code expecting generate_gpu()."""
+        return self.generate(
+            token_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            eos_token_id=eos_token_id,
+        )
+
+    def generate_stream_gpu(
+        self,
+        token_ids: np.ndarray,
+        max_new_tokens: int = 20,
+        temperature: float = 1.0,
+        top_k: int = 0,
+        eos_token_id: int | None = None,
+    ):
+        """Compatibility streaming generator yielding ``(token_id, step_time)``."""
+        import time
+
+        if token_ids.shape[0] != 1:
+            raise ValueError(f"Batch size must be 1, got {token_ids.shape[0]}")
+        if token_ids.shape[1] == 0:
+            raise ValueError("token_ids must have at least 1 token")
+
+        self._init_cache()
+        t0 = time.perf_counter()
+        logits = self.forward(token_ids, use_cache=True)
+        next_logits = logits[0, -1, :]
+        next_token = self._sample(next_logits, temperature, top_k)
+        dt = time.perf_counter() - t0
+        yield next_token, dt
+        if next_token == eos_token_id:
+            return
+
+        for _ in range(max_new_tokens - 1):
+            new_token_arr = np.array([[next_token]], dtype=np.int32)
+            t0 = time.perf_counter()
+            logits = self.forward(new_token_arr, use_cache=True)
+            next_logits = logits[0, -1, :]
+            next_token = self._sample(next_logits, temperature, top_k)
+            dt = time.perf_counter() - t0
+            yield next_token, dt
+            if next_token == eos_token_id:
+                return
