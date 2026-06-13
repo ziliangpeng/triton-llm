@@ -294,7 +294,7 @@ def format_chat_prompt(messages: list[dict]) -> str:
     template with ``<|im_start|>`` tags. For base models, falls back to plain text.
     """
     if hasattr(tokenizer, "apply_chat_template") and "Instruct" in model_variant:
-        return tokenizer.apply_chat_template(messages, tokenize=False)
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     # Fallback: plain text for base models
     parts = []
     for msg in messages:

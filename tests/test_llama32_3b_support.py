@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -39,10 +41,14 @@ def _mk_mock_tokenizer():
     tok = MagicMock()
     tok.eos_token_id = 99
     tok.encode.return_value = [30, 31]
-    tok.apply_chat_template.return_value = (
-        "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>"
-        "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    )
+
+    def _apply_chat_template(messages, tokenize=False, add_generation_prompt=False):
+        base = "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>"
+        if add_generation_prompt:
+            return base + "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        return base
+
+    tok.apply_chat_template.side_effect = _apply_chat_template
 
     def _decode(ids, skip_special_tokens=True):
         mapping = {
@@ -111,7 +117,7 @@ def test_format_chat_prompt_uses_tokenizer_template_for_llama32():
     with patch.object(sm, "model_variant", VARIANT), patch.object(sm, "tokenizer", tok):
         prompt = sm.format_chat_prompt(messages)
     assert "assistant" in prompt
-    tok.apply_chat_template.assert_called_once_with(messages, tokenize=False)
+    tok.apply_chat_template.assert_called_once_with(messages, tokenize=False, add_generation_prompt=True)
 
 
 def test_chat_endpoint_non_streaming_for_llama32():
@@ -140,3 +146,48 @@ def test_chat_endpoint_streaming_for_llama32():
     assert text.endswith("Hello")
     assert any(e["choices"][0].get("finish_reason") == "stop" for e in choice_events)
     assert events[-1] == "[DONE]"
+
+
+def test_download_weights_supports_sharded_safetensors_index():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        index_path = Path(tmpdir) / "model.safetensors.index.json"
+        index_path.write_text(json.dumps({
+            "weight_map": {
+                "a.weight": "model-00001-of-00002.safetensors",
+                "b.weight": "model-00002-of-00002.safetensors",
+            }
+        }))
+        shard1 = str(Path(tmpdir) / "model-00001-of-00002.safetensors")
+        shard2 = str(Path(tmpdir) / "model-00002-of-00002.safetensors")
+
+        def fake_download(repo_id, filename, cache_dir):
+            if filename == "model.safetensors.index.json":
+                return str(index_path)
+            if filename == "model-00001-of-00002.safetensors":
+                return shard1
+            if filename == "model-00002-of-00002.safetensors":
+                return shard2
+            raise AssertionError(filename)
+
+        def fake_load_file(path, device="cpu"):
+            if path == shard1:
+                import torch
+                return {"a.weight": torch.ones((2, 2))}
+            if path == shard2:
+                import torch
+                return {"b.weight": torch.zeros((2, 2))}
+            raise AssertionError(path)
+
+        with patch("tempfile.gettempdir", return_value=tmpdir), \
+             patch("huggingface_hub.list_repo_files", return_value=[
+                 "model.safetensors.index.json",
+                 "model-00001-of-00002.safetensors",
+                 "model-00002-of-00002.safetensors",
+             ]), \
+             patch("huggingface_hub.hf_hub_download", side_effect=fake_download), \
+             patch("safetensors.torch.load_file", side_effect=fake_load_file):
+            weights = sm.download_weights(VARIANT)
+
+        assert "a.weight" in weights and "b.weight" in weights
+        assert weights["a.weight"].shape == (2, 2)
+        assert weights["b.weight"].shape == (2, 2)
