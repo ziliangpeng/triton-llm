@@ -112,6 +112,8 @@ def is_gpt2_variant(variant: str) -> bool:
 def hf_repo_id(variant: str) -> str:
     if is_gpt2_variant(variant):
         return f"openai-community/{variant}"
+    if variant == "Llama-3.2-3B-Instruct":
+        return "meta-llama/Llama-3.2-3B-Instruct"
     return f"HuggingFaceTB/{variant}"
 
 
@@ -151,7 +153,11 @@ def decode(ids: list[int], *, strip_role_prefix: bool = False, strip_whitespace:
 # ── Weights ───────────────────────────────────────────────────────────
 
 def download_weights(variant: str) -> dict:
-    """Download real model weights from HuggingFace, return numpy dict."""
+    """Download real model weights from HuggingFace, return numpy dict.
+
+    Supports both single-file ``model.safetensors`` repos and sharded repos with
+    ``model.safetensors.index.json`` + ``model-0000x-of-0000y.safetensors``.
+    """
     cache_dir = os.path.join(tempfile.gettempdir(), f"triton-llm-{variant}-weights")
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -160,30 +166,46 @@ def download_weights(variant: str) -> dict:
         logger.info("  Loading cached weights...")
         return _load_dir(cache_dir)
 
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, list_repo_files
     from safetensors.torch import load_file
     import torch
 
+    repo_id = hf_repo_id(variant)
     logger.info(f"  Downloading {variant} from HuggingFace...")
     t0 = time.time()
 
-    sf_path = hf_hub_download(
-        repo_id=hf_repo_id(variant),
-        filename="model.safetensors",
-        cache_dir=os.path.join(cache_dir, "hf-cache"),
-    )
+    repo_files = list_repo_files(repo_id)
+    cache_root = os.path.join(cache_dir, "hf-cache")
 
-    tensors = load_file(sf_path, device="cpu")
-    logger.info(f"  Converting {len(tensors)} tensors to float32...")
-    for key, tensor in tensors.items():
-        arr = tensor.to(torch.float32).numpy()
-        np.save(os.path.join(cache_dir, f"{key}.npy"), arr)
+    if "model.safetensors" in repo_files:
+        shard_paths = [hf_hub_download(repo_id=repo_id, filename="model.safetensors", cache_dir=cache_root)]
+    elif "model.safetensors.index.json" in repo_files:
+        index_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors.index.json", cache_dir=cache_root)
+        with open(index_path) as f:
+            index = json.load(f)
+        shard_files = sorted(set(index["weight_map"].values()))
+        logger.info(f"  Sharded checkpoint detected ({len(shard_files)} shards)")
+        shard_paths = [
+            hf_hub_download(repo_id=repo_id, filename=shard_file, cache_dir=cache_root)
+            for shard_file in shard_files
+        ]
+    else:
+        raise FileNotFoundError(f"No supported safetensors weights found in {repo_id}")
+
+    total_tensors = 0
+    for sf_path in shard_paths:
+        tensors = load_file(sf_path, device="cpu")
+        total_tensors += len(tensors)
+        logger.info(f"  Converting {len(tensors)} tensors from {os.path.basename(sf_path)} to float32...")
+        for key, tensor in tensors.items():
+            arr = tensor.to(torch.float32).numpy()
+            np.save(os.path.join(cache_dir, f"{key}.npy"), arr)
 
     with open(marker, "w") as f:
         f.write(f"download_time={time.time() - t0:.1f}s\n")
 
     dt = time.time() - t0
-    logger.info(f"  Done ({len(tensors)} tensors, {dt:.1f}s)")
+    logger.info(f"  Done ({total_tensors} tensors, {dt:.1f}s)")
     return _load_dir(cache_dir)
 
 
@@ -656,6 +678,7 @@ def parse_args():
                    choices=[
                        "SmolLM2-135M", "SmolLM2-360M", "SmolLM2-1.7B",
                        "SmolLM2-135M-Instruct", "SmolLM2-360M-Instruct", "SmolLM2-1.7B-Instruct",
+                       "Llama-3.2-3B-Instruct",
                        "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl",
                    ])
     p.add_argument("--no-download", action="store_true",
