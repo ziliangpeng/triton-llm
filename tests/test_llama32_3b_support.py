@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 import scripts.serve_model as sm
@@ -30,8 +31,8 @@ VARIANT = "Llama-3.2-3B-Instruct"
 def _mk_mock_model():
     model = MagicMock()
     # Llama-style config; set both names so helper works even on MagicMock.
-    model.config.n_positions = 131072
-    model.config.max_position_embeddings = 131072
+    model.config.n_positions = 8192
+    model.config.max_position_embeddings = 8192
     model.generate_gpu.return_value = sm.np.array([[30, 31, 99]], dtype=sm.np.int32)
     model.generate_stream_gpu.return_value = iter([(1, 0.10), (2, 0.11), (99, 0.12)])
     return model
@@ -93,6 +94,7 @@ def test_llama32_config_variant_exists():
     assert cfg.num_key_value_heads == 8
     assert cfg.intermediate_size == 8192
     assert cfg.vocab_size == 128256
+    assert cfg.max_position_embeddings == 8192
     assert cfg.repo_id == "meta-llama/Llama-3.2-3B-Instruct"
 
 
@@ -146,6 +148,17 @@ def test_chat_endpoint_streaming_for_llama32():
     assert text.endswith("Hello")
     assert any(e["choices"][0].get("finish_reason") == "stop" for e in choice_events)
     assert events[-1] == "[DONE]"
+
+
+def test_llama32_request_validation_uses_8192_context_cap():
+    model = _mk_mock_model()
+    with patch.object(sm, "model", model), patch.object(sm, "tokenizer", object()):
+        sm._validate_request(8192 - 4, 4, sm.max_context_positions(model))
+        try:
+            sm._validate_request(8192 - 4, 5, sm.max_context_positions(model))
+            raise AssertionError("Expected request to exceed 8192 context cap")
+        except HTTPException as exc:
+            assert exc.status_code == 400
 
 
 def test_download_weights_supports_sharded_safetensors_index():
