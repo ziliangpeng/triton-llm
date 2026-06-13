@@ -209,6 +209,45 @@ def query_chat_stream(messages: list[dict], max_tokens: int = 50, temperature: f
         yield f"[Connection failed]", True, None
 
 
+def _strip_stream_role_prefix(token_text: str, prefix_buffer: str, prefix_done: bool):
+    """Strip a leading role prefix from streaming chat chunks.
+
+    The server may split role prefixes across multiple SSE chunks, e.g.:
+    ``ass`` → ``istant`` → ``\nHello``. Buffer the initial chunks until we can
+    determine whether they form one of the known newline-qualified role prefixes.
+
+    Returns ``(clean_text, new_prefix_buffer, new_prefix_done)``.
+    ``clean_text`` may be empty while still buffering.
+    """
+    full_prefixes = ("assistant\n", "user\n", "system\n")
+    if prefix_done or not token_text:
+        return token_text, prefix_buffer, prefix_done
+
+    prefix_buffer += token_text
+
+    # Exact/full match: strip the role prefix.
+    for prefix in full_prefixes:
+        if prefix_buffer.startswith(prefix):
+            return prefix_buffer[len(prefix):], "", True
+
+    # Still could become a full role prefix on the next chunk (e.g. "ass", "assistant").
+    if any(prefix.startswith(prefix_buffer) for prefix in full_prefixes):
+        return "", prefix_buffer, False
+
+    # Heuristic: some models emit bare role text with no newline, e.g.
+    # "assistantHello". Strip only when the buffered bare role is immediately
+    # followed by an uppercase letter or punctuation, but keep normal text like
+    # "assistant professor" intact.
+    for bare in ("assistant", "user", "system"):
+        if prefix_buffer.startswith(bare):
+            rest = prefix_buffer[len(bare):]
+            if rest and (rest[0].isupper() or rest[0] in ".,!?:;\"'("):
+                return rest, "", True
+
+    # Not a role prefix; flush buffered content as-is.
+    return prefix_buffer, "", True
+
+
 def _run_stream_chat(args):
     """Run a streaming chat, printing tokens as they arrive."""
     messages = [{"role": "user", "content": args.prompt}]
@@ -217,6 +256,9 @@ def _run_stream_chat(args):
     print(f"User: {args.prompt}")
     print("AI: ", end="", flush=True)
     usage = None
+    full_text = ""
+    prefix_buffer = ""
+    prefix_done = False
     for token_text, is_last, chunk_usage in query_chat_stream(
         messages, args.max_tokens, args.temperature,
         args.top_k, args.seed, args.host, args.port,
@@ -224,7 +266,15 @@ def _run_stream_chat(args):
         if chunk_usage is not None:
             usage = chunk_usage
         elif token_text:
-            print(token_text, end="", flush=True)
+            clean, prefix_buffer, prefix_done = _strip_stream_role_prefix(
+                token_text, prefix_buffer, prefix_done
+            )
+            if clean:
+                print(clean, end="", flush=True)
+                full_text += clean
+    if prefix_buffer and not prefix_done:
+        print(prefix_buffer, end="", flush=True)
+        full_text += prefix_buffer
     print()
     if usage:
         print(f"└─ {usage.get('prompt_tokens', '?')} prompt + "
@@ -367,6 +417,8 @@ def _run_interactive(args):
             print("AI:  ", end="", flush=True)
             usage = None
             full_text = ""
+            prefix_buffer = ""
+            prefix_done = False
             for token_text, is_last, chunk_usage in query_chat_stream(
                 messages, args.max_tokens, args.temperature,
                 args.top_k, args.seed, args.host, args.port,
@@ -374,15 +426,15 @@ def _run_interactive(args):
                 if chunk_usage is not None:
                     usage = chunk_usage
                 elif token_text:
-                    # Strip leading role prefix from server streaming output
-                    clean = token_text
-                    for prefix in ("assistant\n", "user\n", "system\n"):
-                        if full_text == "" and clean.startswith(prefix):
-                            clean = clean[len(prefix):]
-                            break
+                    clean, prefix_buffer, prefix_done = _strip_stream_role_prefix(
+                        token_text, prefix_buffer, prefix_done
+                    )
                     if clean:
                         print(clean, end="", flush=True)
                         full_text += clean
+            if prefix_buffer and not prefix_done:
+                print(prefix_buffer, end="", flush=True)
+                full_text += prefix_buffer
             print()
             if usage:
                 ttft = usage.get("ttft_ms", "?")
