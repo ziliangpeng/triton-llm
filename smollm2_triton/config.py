@@ -50,6 +50,7 @@ class SmolLM2Config:
     tie_word_embeddings: bool = True
     hidden_act: str = "silu"
     torch_dtype: str = "float32"
+    repo_id: str | None = None
 
     @classmethod
     def from_pretrained(cls, name: str) -> "SmolLM2Config":
@@ -85,6 +86,25 @@ class SmolLM2Config:
                 num_attention_heads=32,
                 num_key_value_heads=32,
                 intermediate_size=8192,
+            ),
+            # Llama 3.2 Instruct — Llama-family architecture, different tokenizer/weights.
+            # Official config exposes 131k context with Llama-3 rope scaling, which is
+            # not implemented in the current Triton path yet. For the initial bring-up,
+            # keep the supported context to the base 8192 window that standard RoPE covers.
+            "Llama-3.2-3B-Instruct": SmolLM2Config(
+                vocab_size=128256,
+                hidden_size=3072,
+                num_hidden_layers=28,
+                num_attention_heads=24,
+                num_key_value_heads=8,
+                intermediate_size=8192,
+                max_position_embeddings=8192,
+                rms_norm_eps=1e-5,
+                rope_theta=500000.0,
+                tie_word_embeddings=True,
+                hidden_act="silu",
+                torch_dtype="float32",
+                repo_id="meta-llama/Llama-3.2-3B-Instruct",
             ),
         }
         if name not in variants:
