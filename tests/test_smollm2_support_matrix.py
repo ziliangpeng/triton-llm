@@ -59,7 +59,18 @@ def _mk_mock_model():
 def _mk_mock_tokenizer():
     tok = MagicMock()
     tok.eos_token_id = 99
-    tok.encode.return_value = [10, 11]
+
+    def _encode(text):
+        # Distinguish plain completion prompts from formatted chat prompts.
+        if text == "Hi":
+            return [10, 11]
+        if text.endswith("\nAssistant:"):
+            return [20, 21]
+        if "<|im_start|>assistant" in text:
+            return [30, 31]
+        return [10, 11]
+
+    tok.encode.side_effect = _encode
 
     def _decode(ids, skip_special_tokens=True):
         # Simulate prefix stripping path for non-streaming and good spacing for streaming.
@@ -90,6 +101,20 @@ async def _collect_streaming_text(response: StreamingResponse) -> str:
         else:
             parts.append(chunk)
     return "".join(parts)
+
+
+def _parse_sse_payload(payload: str):
+    events = []
+    for block in payload.split("\n\n"):
+        block = block.strip()
+        if not block.startswith("data: "):
+            continue
+        data = block[6:]
+        if data == "[DONE]":
+            events.append("[DONE]")
+        else:
+            events.append(sm.json.loads(data))
+    return events
 
 
 @pytest.mark.parametrize("variant", SUPPORTED_VARIANTS)
@@ -146,6 +171,14 @@ def test_chat_endpoint_supported_for_all_smollm2_variants(variant):
     assert resp.choices[0].message.role == "assistant"
     assert resp.choices[0].message.content == "Hello"
     assert resp.choices[0].finish_reason == "stop"
+    # Verify the route encoded the formatted prompt path appropriate for the variant.
+    called_ids = model.generate_gpu.call_args.args[0].tolist()[0]
+    if "Instruct" in variant:
+        tok.apply_chat_template.assert_called_once()
+        assert called_ids == [30, 31]
+    else:
+        tok.apply_chat_template.assert_not_called()
+        assert called_ids == [20, 21]
 
 
 @pytest.mark.parametrize("variant", SUPPORTED_VARIANTS)
@@ -157,9 +190,12 @@ def test_streaming_completion_supported_for_all_smollm2_variants(variant):
         resp = asyncio.run(sm.completions(req))
         assert isinstance(resp, StreamingResponse)
         payload = asyncio.run(_collect_streaming_text(resp))
-    assert "data:" in payload
-    assert "Hello" in payload
-    assert "[DONE]" in payload
+    events = _parse_sse_payload(payload)
+    choice_events = [e for e in events if isinstance(e, dict) and e.get("choices")]
+    text = "".join(e["choices"][0].get("text", "") for e in choice_events)
+    assert text.endswith("Hello")
+    assert any(e["choices"][0].get("finish_reason") in ("length", "stop") for e in choice_events)
+    assert events[-1] == "[DONE]"
 
 
 @pytest.mark.parametrize("variant", SUPPORTED_VARIANTS)
@@ -171,9 +207,19 @@ def test_streaming_chat_supported_for_all_smollm2_variants(variant):
         resp = asyncio.run(sm.chat_completions(req))
         assert isinstance(resp, StreamingResponse)
         payload = asyncio.run(_collect_streaming_text(resp))
-    assert '"delta": {"content":' in payload or '"delta":{"content":' in payload
-    assert '"finish_reason": "stop"' in payload or '"finish_reason":"stop"' in payload
-    assert "[DONE]" in payload
+    events = _parse_sse_payload(payload)
+    choice_events = [e for e in events if isinstance(e, dict) and e.get("choices")]
+    text = "".join(
+        e["choices"][0].get("delta", {}).get("content", "")
+        for e in choice_events
+    )
+    # Today the server may still emit assistant-prefixed streaming text; the
+    # client-side prefix-strip helper is tested separately. Here we only assert
+    # the endpoint contract and that content reconstructs successfully.
+    assert text.endswith("Hello")
+    assert any(e["choices"][0].get("delta", {}).get("content", "") for e in choice_events)
+    assert any(e["choices"][0].get("finish_reason") == "stop" for e in choice_events)
+    assert events[-1] == "[DONE]"
 
 
 @pytest.mark.parametrize("variant", INSTRUCT_VARIANTS)
