@@ -427,6 +427,7 @@ class GPT2Model:
             scaled = logits / temperature
             probs = softmax(scaled.reshape(1, -1)).ravel()
             if top_k > 0:
+                top_k = min(top_k, len(probs))
                 indices = np.argpartition(probs, -top_k)[-top_k:]
                 filtered = np.zeros_like(probs)
                 filtered[indices] = probs[indices]

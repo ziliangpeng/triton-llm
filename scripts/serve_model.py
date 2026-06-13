@@ -130,19 +130,22 @@ def encode(text: str) -> np.ndarray:
     return np.array([ids], dtype=np.int32)
 
 
-def decode(ids: list[int]) -> str:
-    """Decode token IDs to text, stripping leading role prefixes.
+def decode(ids: list[int], *, strip_role_prefix: bool = False, strip_whitespace: bool = False) -> str:
+    """Decode token IDs to text.
 
-    EOS tokens (``<|im_end|>``) are stripped by ``skip_special_tokens=True``.
-    Instruct models sometimes generate the role prefix as literal text in the
-    first token, so we strip those leading markers.
+    Special tokens are removed via ``skip_special_tokens=True``. Optional
+    role-prefix stripping is used only for chat/instruct paths; plain completion
+    paths preserve raw text so GPT-2 whitespace/formatting is not corrupted.
     """
     text = tokenizer.decode(ids, skip_special_tokens=True)
-    for prefix in ("assistant\n", "user\n", "system\n"):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-            break
-    return text.strip()
+    if strip_role_prefix:
+        for prefix in ("assistant\n", "user\n", "system\n"):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+    if strip_whitespace:
+        text = text.strip()
+    return text
 
 
 # ── Weights ───────────────────────────────────────────────────────────
@@ -437,11 +440,13 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
     step_times: list[float] = []
     all_ids: list[int] = []
     prev_text = ""
+    last_token_id: int | None = None
 
     while True:
         msg_type, payload, step_time = await queue.get()
         if msg_type == "token":
             all_ids.append(payload)
+            last_token_id = payload
             token_text = decode(all_ids)
             # Extract only the new characters since last token
             if token_text.startswith(prev_text):
@@ -461,8 +466,9 @@ async def _stream_generate(req_prompt: str, max_tokens: int, temperature: float,
             return
 
     # Final chunk with finish_reason
+    finish = "stop" if last_token_id == tokenizer.eos_token_id else "length"
     final_chunk = {
-        "choices": [{"text": "", "finish_reason": "length"}],
+        "choices": [{"text": "", "finish_reason": finish}],
     }
     yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
 
@@ -527,7 +533,7 @@ async def _stream_chat_generate(req_prompt: str, max_tokens: int, temperature: f
         if msg_type == "token":
             all_ids.append(payload)
             # Incremental decode: accumulate IDs for proper whitespace
-            full = decode(all_ids)
+            full = decode(all_ids, strip_role_prefix=True, strip_whitespace=True)
             if full.startswith(prev_text):
                 delta = full[len(prev_text):]
             else:
@@ -622,6 +628,7 @@ async def chat_completions(req: ChatCompletionRequest):
     new_text, new_ids, seq_len, dt = _generate(
         prompt, req.max_tokens, req.temperature, req.top_k, req.seed
     )
+    new_text = decode(new_ids, strip_role_prefix=True, strip_whitespace=True)
     finish = "stop" if new_ids and new_ids[-1] == tokenizer.eos_token_id else "length"
     return ChatCompletionResponse(
         usage=Usage(

@@ -55,3 +55,15 @@ def test_max_context_positions_supports_gpt2_and_smollm2_shapes():
 
     assert sm.max_context_positions(M1()) == 1024
     assert sm.max_context_positions(M2()) == 8192
+
+
+def test_decode_preserves_gpt2_completion_whitespace():
+    tok = type("Tok", (), {"decode": lambda self, ids, skip_special_tokens=True: " hello\n"})()
+    with patch.object(sm, "tokenizer", tok):
+        assert sm.decode([1, 2]) == " hello\n"
+
+
+def test_decode_can_strip_chat_role_prefix_when_requested():
+    tok = type("Tok", (), {"decode": lambda self, ids, skip_special_tokens=True: "assistant\nHello"})()
+    with patch.object(sm, "tokenizer", tok):
+        assert sm.decode([1], strip_role_prefix=True, strip_whitespace=True) == "Hello"
